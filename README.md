@@ -26,20 +26,83 @@ Requer **Go 1.22+**.
 
 ## Uso
 
+
+Arquivo: go.mod
 ```go
+module ident-test
+
+go 1.22
+
+require github.com/patrickbrandao/go-loghub-uuid  v0.1.0
+require github.com/patrickbrandao/go-loghub-ident v0.2.0
+```
+
+Arquivo: main.go
+```go
+// Defina LOGHUB_IDENT_DEBUG=1 para ver a origem de cada valor em stderr.
 package main
 
 import (
-	"fmt"
+    "fmt"
 
-	lhident "github.com/patrickbrandao/go-loghub-ident"
+    lhident "github.com/patrickbrandao/go-loghub-ident"
 )
 
 func main() {
-	lhident.Initialize() // encerra o processo se algo falhar
-	fmt.Println("agent:", lhident.AgentName(), lhident.AgentUUID())
+    lhident.Initialize() // encerra o processo se algo falhar
+
+    fmt.Printf("DataDir:   %s\n", lhident.DataDir())
+    fmt.Printf("MachineID: %s\n", lhident.MachineID())
+    fmt.Printf("AgentName: %s\n", lhident.AgentName())
+    fmt.Printf("AgentUUID: %s\n", lhident.AgentUUID())
+    fmt.Printf("Hostname:  %s\n", lhident.Hostname())
+    fmt.Printf("Workspace: %s\n", lhident.Workspace())
 }
 ```
+
+Compilar:
+```bash
+#go mod download;
+GOSUMDB=off go mod download;
+#go env -w GOPROXY=direct && go mod download;
+go get ident-test;
+#go build .;
+go build -o ident-uuid main.go;
+```
+
+Compilar (alternativa):
+```bash
+go env -w GOSUMDB=off;
+go get github.com/patrickbrandao/go-loghub-ident;
+go mod tidy;
+go build -o ident-test main.go;
+```
+
+Compilar (multi plataforma):
+```
+# Windows
+GOOS=windows GOARCH=amd64 go build -o ident-test.exe main.go
+
+# macOS
+GOOS=darwin GOARCH=amd64 go build -o ident-test main.go
+
+# Linux (outros processadores)
+GOOS=linux GOARCH=arm64 go build -o ident-test main.go
+```
+
+Rodar:
+```bash
+./ident-test;
+    # DataDir:   /data
+    # MachineID: 79fb72c3199f4b85978420223a389b94
+    # AgentName: ident-test
+    # AgentUUID: 019e9e7e-bc45-76b6-8351-4430b52c4070
+    # Hostname:  debv.tmsoft.com.br
+    # Workspace: default
+```
+
+
+
 
 ### Regras de uso
 

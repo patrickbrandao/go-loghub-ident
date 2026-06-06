@@ -22,9 +22,13 @@ git add .;
 git commit -m "First-Commit";
 git push -u origin main;
 
+# Remover tag 0.1.0, deu pau
+# git tag -d 0.1.0 && git push origin --delete 0.1.0
+git tag -d v0.1.0 && git push origin --delete v0.1.0;
+
 # Cria a tag (o -f foi usado para sobrescrever a antiga);
-git tag -f v0.1.0;
-git tag -a v0.1.0 -m "Release version 0.1.0";
+git tag -a v0.2.0 -m "Release version 0.2.0";
+#git tag -f v0.2.0;
 
 # Envia a tag para o GitHub (o -f forcou a atualizacao remota)
 git push -f origin v0.1.0;

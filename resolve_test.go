@@ -310,6 +310,21 @@ func TestResolve_AgentName_FromArgv0StripExe(t *testing.T) {
 	}
 }
 
+func TestResolve_AgentName_FromValidFile(t *testing.T) {
+	sys := newFakeSystem().withDataDir()
+	sys.files["/data/agent_name"] = "Edge-Collector\n" // lowercase aplicado
+	sys.env["MACHINE_ID"] = "abcdef0123456789abcdef0123456789"
+	sys.env["AGENT_UUID"] = "019e99e3-42f0-7882-9719-2305ff84949c"
+	sys.env["WORKSPACE"] = "prod"
+	id, f := resolve(sys)
+	if f != nil {
+		t.Fatalf("falha inesperada: %+v", f)
+	}
+	if id.agentName != "edge-collector" {
+		t.Errorf("agentName = %q (esperava edge-collector)", id.agentName)
+	}
+}
+
 func TestResolve_AgentName_FileInvalidAborts104(t *testing.T) {
 	sys := newFakeSystem().withDataDir()
 	sys.files["/data/agent_name"] = "Invalid Name!\n"
@@ -349,6 +364,23 @@ func TestResolve_AgentUUID_GeneratesAndPersists(t *testing.T) {
 	}
 	if got := sys.written["/data/agent_uuid"]; !strings.HasPrefix(got, id.agentUUID) {
 		t.Errorf("agent_uuid persistido = %q", got)
+	}
+}
+
+func TestResolve_AgentUUID_FromValidFile(t *testing.T) {
+	sys := newFakeSystem().withDataDir()
+	sys.files["/data/agent_uuid"] = "01900000-0000-7000-8000-000000000abc\n"
+	sys.env["MACHINE_ID"] = "abcdef0123456789abcdef0123456789"
+	sys.env["WORKSPACE"] = "prod"
+	id, f := resolve(sys)
+	if f != nil {
+		t.Fatalf("falha inesperada: %+v", f)
+	}
+	if id.agentUUID != "01900000-0000-7000-8000-000000000abc" {
+		t.Errorf("agentUUID = %q", id.agentUUID)
+	}
+	if sys.uuidCalls != 0 {
+		t.Errorf("não deveria gerar UUID com arquivo válido, gerou %d", sys.uuidCalls)
 	}
 }
 
@@ -449,6 +481,57 @@ func TestResolve_Workspace_Invalid111(t *testing.T) {
 	_, f := resolve(sys)
 	if f == nil || f.code != 111 {
 		t.Fatalf("esperava 111, obtive %+v", f)
+	}
+}
+
+func TestResolve_Workspace_FromFile(t *testing.T) {
+	sys := newFakeSystem().withDataDir()
+	sys.files["/data/workspace"] = "Staging\n" // lowercase aplicado na resolução
+	sys.env["MACHINE_ID"] = "abcdef0123456789abcdef0123456789"
+	sys.env["AGENT_UUID"] = "019e99e3-42f0-7882-9719-2305ff84949c"
+	id, f := resolve(sys)
+	if f != nil {
+		t.Fatalf("falha inesperada: %+v", f)
+	}
+	if id.workspace != "staging" {
+		t.Errorf("workspace = %q (esperava staging)", id.workspace)
+	}
+}
+
+func TestResolve_Workspace_FileInvalidAborts111(t *testing.T) {
+	sys := newFakeSystem().withDataDir()
+	sys.files["/data/workspace"] = "bad workspace!\n"
+	sys.env["MACHINE_ID"] = "abcdef0123456789abcdef0123456789"
+	sys.env["AGENT_UUID"] = "019e99e3-42f0-7882-9719-2305ff84949c"
+	_, f := resolve(sys)
+	if f == nil || f.code != 111 {
+		t.Fatalf("esperava 111, obtive %+v", f)
+	}
+}
+
+// ----- Diagnóstico (debug) -----
+
+func TestResolve_DebugLines_ReportOrigins(t *testing.T) {
+	sys := newFakeSystem() // tudo via env -> nenhuma trilha toca o disco
+	sys.env = map[string]string{
+		"MACHINE_ID": "abcdef0123456789abcdef0123456789",
+		"AGENT_NAME": "svc",
+		"AGENT_UUID": "019e99e3-42f0-7882-9719-2305ff84949c",
+		"HOSTNAME":   "node01",
+		"WORKSPACE":  "prod",
+	}
+	id, f := resolve(sys)
+	if f != nil {
+		t.Fatalf("falha inesperada: %+v", f)
+	}
+	joined := strings.Join(id.debug, "\n")
+	for _, want := range []string{
+		"MACHINE_ID: env", "AGENT_NAME: env", "AGENT_UUID: env",
+		"HOSTNAME: env", "WORKSPACE: env",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("linha de debug ausente: %q\nobtido:\n%s", want, joined)
+		}
 	}
 }
 

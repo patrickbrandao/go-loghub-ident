@@ -1,0 +1,18 @@
+# Binários compilados
+examples/minimal/minimal
+*.exe
+*.test
+*.out
+
+# Artefatos de cobertura
+coverage.txt
+*.cover
+
+# Metadados de SO / editor
+.DS_Store
+*~
+.idea/
+.vscode/
+
+# Variáveis de ambiente locais
+.env

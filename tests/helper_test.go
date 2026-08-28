@@ -282,13 +282,30 @@ func fullEnv() map[string]string {
 // withDataDir devolve fullEnv apontando para um diretório temporário real.
 func withDataDir(t *testing.T) map[string]string {
 	t.Helper()
-	dir := t.TempDir()
 	env := fullEnv()
-	env["DATADIR"] = dir
-	// Um MACHINE_ID_FILE inexistente neutraliza o /etc/machine-id da máquina
-	// que roda os testes, tornando os casos determinísticos.
-	env["MACHINE_ID_FILE"] = filepath.Join(dir, "sem-machine-id")
+	env["DATADIR"] = t.TempDir()
+	env["MACHINE_ID_FILE"] = emptyMachineIDFile(t)
 	return env
+}
+
+// emptyMachineIDFile cria um arquivo de machine-id VAZIO e devolve o caminho.
+//
+// É assim que a suíte neutraliza o /etc/machine-id da máquina que roda os
+// testes: o nível 2 da cadeia é consultado, não entrega nada e a resolução
+// segue para o $DATADIR, de forma determinística em qualquer plataforma.
+//
+// Apontar para um arquivo INEXISTENTE não serviria — a SPEC §7.2 manda
+// justamente trocar para /etc/machine-id nesse caso. Como esse arquivo existe
+// no Linux e não existe no macOS, a suíte passaria numa plataforma e falharia
+// na outra. O arquivo fica FORA do $DATADIR para não poluir os testes que
+// enumeram o conteúdo do diretório de dados.
+func emptyMachineIDFile(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "machine-id-vazio")
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatalf("criação do machine-id vazio: %v", err)
+	}
+	return path
 }
 
 // without remove chaves do ambiente, forçando a cadeia de fallback.

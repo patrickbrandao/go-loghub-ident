@@ -986,3 +986,50 @@ func TestResolve_ColdStart_ClearsStaleRegenerationRecord(t *testing.T) {
 		t.Errorf("o registro obsoleto deveria ter sido removido")
 	}
 }
+
+// ----- SPEC §7.2: só "inexistente" troca pelo arquivo padrão do sistema -----
+
+// Um $MACHINE_ID_FILE que EXISTE mas está vazio é uma fonte vazia: a cadeia
+// segue para o nível 3 ($DATADIR/machine_id), e NÃO volta para o
+// /etc/machine-id — a troca pelo padrão vale apenas para arquivo inexistente.
+//
+// A suíte de integração depende desse comportamento para neutralizar o
+// /etc/machine-id da máquina que a roda, que existe no Linux e não existe no
+// macOS. Sem ele, os testes passariam numa plataforma e falhariam na outra.
+func TestResolve_MachineID_EmptyExplicitFileFallsToDataDir(t *testing.T) {
+	sys := newFakeSystem().withDataDir()
+	sys.env["MACHINE_ID_FILE"] = "/custom/vazio"
+	sys.files["/custom/vazio"] = ""
+	sys.files[DefaultMachineIDFile] = "aaaabbbbccccddddeeeeffff00001111\n"
+	sys.files["/data/machine_id"] = "11112222333344445555666677778888\n"
+	sys.env["AGENT_UUID"] = "019e99e3-42f0-7882-9719-2305ff84949c"
+	sys.env["WORKSPACE"] = "prod"
+
+	id, f := resolve(sys)
+	if f != nil {
+		t.Fatalf("falha inesperada: %+v", f)
+	}
+	if id.machineID != "11112222333344445555666677778888" {
+		t.Errorf("machineID = %q (esperava o valor de $DATADIR, não o de %s)",
+			id.machineID, DefaultMachineIDFile)
+	}
+}
+
+// Já um $MACHINE_ID_FILE INEXISTENTE troca pelo padrão do sistema, que tem
+// precedência sobre o $DATADIR (SPEC §7).
+func TestResolve_MachineID_MissingExplicitFileUsesDefault(t *testing.T) {
+	sys := newFakeSystem().withDataDir()
+	sys.env["MACHINE_ID_FILE"] = "/custom/inexistente"
+	sys.files[DefaultMachineIDFile] = "aaaabbbbccccddddeeeeffff00001111\n"
+	sys.files["/data/machine_id"] = "11112222333344445555666677778888\n"
+	sys.env["AGENT_UUID"] = "019e99e3-42f0-7882-9719-2305ff84949c"
+	sys.env["WORKSPACE"] = "prod"
+
+	id, f := resolve(sys)
+	if f != nil {
+		t.Fatalf("falha inesperada: %+v", f)
+	}
+	if id.machineID != "aaaabbbbccccddddeeeeffff00001111" {
+		t.Errorf("machineID = %q (esperava o valor de %s)", id.machineID, DefaultMachineIDFile)
+	}
+}

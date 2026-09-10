@@ -1,0 +1,46 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: loghub-service-demo
+  labels:
+    app: loghub-service-demo
+spec:
+  # Garante permissões adequadas no volume compartilhado para usuários nonroot
+  securityContext:
+    fsGroup: 65532
+
+  volumes:
+    - name: ident-data
+      emptyDir: {} # No Kubernetes real com Pod único, use emptyDir ou PVC dedicado
+
+  containers:
+    # --------------------------------------------------------------------------
+    # Container Principal da Aplicação
+    # --------------------------------------------------------------------------
+    - name: app
+      image: myregistry.internal/loghub-app:v1.0.0
+      env:
+        - name: DATADIR
+          value: "/data"
+        - name: WORKSPACE
+          value: "production"
+        # Hostname do Pod é resolvido nativamente pelo kernel
+      volumeMounts:
+        - name: ident-data
+          mountPath: /data
+
+    # --------------------------------------------------------------------------
+    # Sidecar de Coleta de Logs / Telemetria
+    # Compartilha intencionalmente o mesmo /data do container principal
+    # Ambos convergem atomicamente para o mesmo MachineID e AgentUUID
+    # --------------------------------------------------------------------------
+    - name: loghub-collector-sidecar
+      image: myregistry.internal/loghub-collector:v1.0.0
+      env:
+        - name: DATADIR
+          value: "/data"
+        - name: WORKSPACE
+          value: "production"
+      volumeMounts:
+        - name: ident-data
+          mountPath: /data

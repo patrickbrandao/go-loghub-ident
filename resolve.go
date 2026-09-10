@@ -131,18 +131,28 @@ func isSpaceOrControl(r rune) bool {
 	return unicode.IsSpace(r) || unicode.IsControl(r)
 }
 
+// fnv1a64 devolve o hash FNV-1a de 64 bits de s, usado para identificar
+// conteúdo inválido sem reproduzir nenhum byte do conteúdo em mensagens.
+func fnv1a64(s string) uint64 {
+	const (
+		offset64 = 14695981039346656037
+		prime64  = 1099511628211
+	)
+	h := uint64(offset64)
+	for i := 0; i < len(s); i++ {
+		h ^= uint64(s[i])
+		h *= prime64
+	}
+	return h
+}
+
 // describeInvalid descreve um valor reprovado SEM reproduzi-lo. O conteúdo de
 // um arquivo em $DATADIR pode ter sido plantado por outro inquilino do volume
 // (um symlink para um segredo, por exemplo); ecoá-lo em stderr entregaria o
-// arquivo ao coletor de logs. Comprimento e o primeiro caractere fora do
-// alfabeto mais permissivo dos campos bastam para o operador diagnosticar.
+// arquivo ao coletor de logs. O tamanho e o hash FNV-1a de 64 bits identificam
+// a ocorrência de forma determinística e não-invertível (SPEC §12).
 func describeInvalid(v string) string {
-	for i, c := range v {
-		if c > unicode.MaxASCII || !(isAlnumLower(byte(c)) || c == '.' || c == '_' || c == '-') {
-			return fmt.Sprintf("%d byte(s); caractere %q inaceitável na posição %d", len(v), c, i)
-		}
-	}
-	return fmt.Sprintf("%d byte(s); caracteres aceitáveis, mas comprimento ou estrutura inválidos", len(v))
+	return fmt.Sprintf("%d bytes, hash %016x", len(v), fnv1a64(v))
 }
 
 // maxEchoLen limita o que uma mensagem reproduz de um valor de ENV — que é do
@@ -164,7 +174,16 @@ func (r *resolver) readFile(path string) (string, error) {
 }
 
 func (r *resolver) readDataPath(path string) (string, error) {
-	return r.readWith(r.sys.ReadFileNoFollow, path)
+	data, err := r.sys.ReadFileNoFollow(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", nil
+		}
+		// Fontes inválidas em $DATADIR (symlinks, FIFOs, > 4 KiB) não são
+		// engolidas como ausência: abortam com código 100 conforme a SPEC §13.
+		return "", err
+	}
+	return firstLine(data), nil
 }
 
 func (r *resolver) readWith(read func(string) ([]byte, error), path string) (string, error) {
@@ -281,7 +300,11 @@ var (
 // e lê vazio ou parcial não pode concluir "corrompido" de imediato.
 // Relemos por um tempo limitado antes de declarar corrupção.
 var (
-	settleAttempts = 50
+	// settleAttempts * settleInterval = 10 s de espera máxima antes de declarar
+	// corrupção. Em volumes de rede (NFS) ou no plano B de CreateExclusive
+	// (cujo claimTTL é 10 s), o perdedor da corrida não pode descartar
+	// precipitadamente o arquivo enquanto o vencedor ainda grava/sincroniza.
+	settleAttempts = 500
 	settleInterval = 20 * time.Millisecond
 	settleSleep    = time.Sleep
 )
@@ -435,11 +458,24 @@ func (r *resolver) envField(key string) string {
 // diretório de trabalho: com "DATADIR=dados", o mesmo serviço iniciado de outro
 // lugar (um WorkingDirectory diferente no unit do systemd, um chdir da
 // aplicação) leria outro arquivo e viraria outro agente.
+func hasControlBytes(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] < 0x20 || s[i] == 0x7f {
+			return true
+		}
+	}
+	return false
+}
+
 func (r *resolver) resolveDataDirPath() *failure {
 	dir := r.env("DATADIR")
 	origin := "env"
 	if dir == "" {
 		dir, origin = DefaultDataDir, "padrão"
+	}
+	if hasControlBytes(dir) {
+		return newFailure(100, "DATADIR",
+			fmt.Sprintf("caminho %s contém caractere de controle", preview(dir)))
 	}
 	if !rootedPath(dir) {
 		return newFailure(100, "DATADIR",
@@ -488,6 +524,10 @@ func (r *resolver) machineIDFilePath() (path string, explicit bool, f *failure) 
 	midFile := r.env("MACHINE_ID_FILE")
 	if midFile == "" {
 		return DefaultMachineIDFile, false, nil
+	}
+	if hasControlBytes(midFile) {
+		return "", true, newFailure(100, "MACHINE_ID_FILE",
+			fmt.Sprintf("caminho %s contém caractere de controle", preview(midFile)))
 	}
 	if !rootedPath(midFile) {
 		return "", true, newFailure(100, "MACHINE_ID_FILE",

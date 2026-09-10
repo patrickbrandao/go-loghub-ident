@@ -10,7 +10,7 @@ import (
 	lhident "github.com/patrickbrandao/go-loghub-ident"
 )
 
-// Benchmarks que sustentam as medições de tasks/REPORT-01.md.
+// Benchmarks que sustentam as medições de desempenho e alocações.
 //
 // Rodar:
 //

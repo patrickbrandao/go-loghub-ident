@@ -4,13 +4,13 @@ Testes que exercitam a **API pública** de `go-loghub-ident` contra o sistema
 operacional real (sem o `fakeSystem`). Complementam `../resolve_test.go`, que
 testa a função pura `resolve` com um `system` injetado.
 
-| Arquivo             | Conteúdo                                                              |
-|---------------------|-----------------------------------------------------------------------|
-| `helper_test.go`    | `TestMain`, o harness de subprocesso e os utilitários de ambiente     |
-| `api_test.go`       | caminho feliz, precedência env → arquivo → fallback, persistência    |
-| `exitcodes_test.go` | a tabela de códigos de saída da SPEC §13, ponta a ponta               |
-| `bugs_test.go`      | regressões dos defeitos de [`REPORT-01`](../tasks/REPORT-01.md) e [`REPORT-03`](../tasks/REPORT-03.md) |
-| `bugs2_test.go`     | regressões dos defeitos de [`REPORT-02`](../tasks/REPORT-02.md)       |
+| Arquivo             | Conteúdo                                                                 |
+| ------------------- | ------------------------------------------------------------------------ |
+| `helper_test.go`    | `TestMain`, o harness de subprocesso e os utilitários de ambiente        |
+| `api_test.go`       | caminho feliz, precedência env → arquivo → fallback, persistência        |
+| `exitcodes_test.go` | a tabela de códigos de saída da SPEC §13, ponta a ponta                  |
+| `bugs_test.go`      | testes de regressão permanentes (BUG-01 a BUG-16)                        |
+| `bugs2_test.go`     | testes de regressão de persistência durável e atômica (BUG-17 a BUG-20)  |
 | `bench_test.go`     | custo dos getters, da validação (regex vs. manual) e de um boot completo |
 
 ## Como funciona

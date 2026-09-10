@@ -245,4 +245,3 @@ func Workspace() string { return idWorkspace }
 // IsInitialized informa se Initialize já concluiu com sucesso. Getters chamados
 // antes disso devolvem "" (zero value) e não devem ser usados — ver SPEC §3.
 func IsInitialized() bool { return initialized.Load() }
-

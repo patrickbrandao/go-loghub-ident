@@ -29,6 +29,11 @@ type fakeSystem struct {
 	perms     map[string]os.FileMode // caminho -> permissão recebida na gravação
 	uuidCalls int
 
+	symlinks  map[string]string
+	statErr   map[string]error
+	fileSizes map[string]int64
+	fileModes map[string]os.FileMode
+
 	// onCreateRefused é chamado quando CreateExclusive recusa a criação porque
 	// o arquivo já existe. Permite reproduzir a janela da corrida entre
 	// processos: o vencedor materializa o arquivo entre a nossa leitura e a
@@ -36,29 +41,48 @@ type fakeSystem struct {
 	onCreateRefused func(path string)
 }
 
+func init() {
+	settleSleep = func(time.Duration) {}
+}
+
 func newFakeSystem() *fakeSystem {
 	return &fakeSystem{
-		env:      map[string]string{},
-		files:    map[string]string{},
-		dirs:     map[string]bool{},
-		args:     []string{"/usr/local/bin/myservice"},
-		hostname: "node01",
-		uuid:     "019e99e3-42f0-7882-9719-2305ff84949c",
-		readErr:  map[string]error{},
-		writeErr: map[string]error{},
-		written:  map[string]string{},
-		perms:    map[string]os.FileMode{},
+		env:       map[string]string{},
+		files:     map[string]string{},
+		dirs:      map[string]bool{},
+		symlinks:  map[string]string{},
+		statErr:   map[string]error{},
+		readErr:   map[string]error{},
+		fileSizes: map[string]int64{},
+		fileModes: map[string]os.FileMode{},
+		writeErr:  map[string]error{},
+		written:   map[string]string{},
+		perms:     map[string]os.FileMode{},
+		args:      []string{"/usr/local/bin/myservice"},
+		hostname:  "node01",
+		uuid:      "019e99e3-42f0-7882-9719-2305ff84949c",
 	}
 }
 
 func (f *fakeSystem) Getenv(key string) string { return f.env[key] }
 
 func (f *fakeSystem) Stat(path string) (os.FileInfo, error) {
+	if err := f.statErr[path]; err != nil {
+		return nil, err
+	}
+	if target, ok := f.symlinks[path]; ok {
+		return f.Stat(target)
+	}
 	if f.dirs[path] {
 		return fakeInfo{name: filepath.Base(path), dir: true}, nil
 	}
-	if _, ok := f.files[path]; ok {
-		return fakeInfo{name: filepath.Base(path)}, nil
+	if content, ok := f.files[path]; ok {
+		sz := int64(len(content))
+		if customSz, ok := f.fileSizes[path]; ok {
+			sz = customSz
+		}
+		mode := f.fileModes[path]
+		return fakeInfo{name: filepath.Base(path), size: sz, mode: mode}, nil
 	}
 	return nil, &fs.PathError{Op: "stat", Path: path, Err: fs.ErrNotExist}
 }
@@ -67,10 +91,26 @@ func (f *fakeSystem) ReadFile(path string) ([]byte, error) {
 	if err := f.readErr[path]; err != nil {
 		return nil, err
 	}
+	if target, ok := f.symlinks[path]; ok {
+		return f.ReadFile(target)
+	}
+	if f.dirs[path] {
+		return nil, fmt.Errorf("%w: %s é um diretório", errInvalidSource, path)
+	}
 	if content, ok := f.files[path]; ok {
+		if sz, ok := f.fileSizes[path]; ok && sz > maxIdentFileSize {
+			return nil, fmt.Errorf("%w: %s acima do limite", errInvalidSource, path)
+		}
 		return []byte(content), nil
 	}
 	return nil, &fs.PathError{Op: "open", Path: path, Err: fs.ErrNotExist}
+}
+
+func (f *fakeSystem) ReadFileNoFollow(path string) ([]byte, error) {
+	if f.symlinks[path] != "" {
+		return nil, fmt.Errorf("%w: %s é um link simbólico", errInvalidSource, path)
+	}
+	return f.ReadFile(path)
 }
 
 // CreateExclusive só grava se o caminho ainda não existir, como o O_EXCL real.
@@ -133,11 +173,21 @@ func (f *fakeSystem) GenerateUUIDv7() (string, error) {
 type fakeInfo struct {
 	name string
 	dir  bool
+	size int64
+	mode os.FileMode
 }
 
-func (i fakeInfo) Name() string       { return i.name }
-func (i fakeInfo) Size() int64        { return 0 }
-func (i fakeInfo) Mode() os.FileMode  { return 0 }
+func (i fakeInfo) Name() string { return i.name }
+func (i fakeInfo) Size() int64  { return i.size }
+func (i fakeInfo) Mode() os.FileMode {
+	if i.mode != 0 {
+		return i.mode
+	}
+	if i.dir {
+		return os.ModeDir | 0o755
+	}
+	return 0o644
+}
 func (i fakeInfo) ModTime() time.Time { return time.Time{} }
 func (i fakeInfo) IsDir() bool        { return i.dir }
 func (i fakeInfo) Sys() any           { return nil }
@@ -591,6 +641,11 @@ func TestApplyAndGetters(t *testing.T) {
 	}
 }
 
+func TestIsInitialized(t *testing.T) {
+	// IsInitialized expõe o estado de initialized
+	_ = IsInitialized()
+}
+
 // ----- BUG-18: falha na geração do MACHINE_ID tem código próprio (114) -----
 
 // A SPEC §13 reserva o 105 exclusivamente para AGENT_UUID. Emitir 105 numa
@@ -598,6 +653,23 @@ func TestApplyAndGetters(t *testing.T) {
 func TestResolve_MachineID_GenFailure114(t *testing.T) {
 	sys := newFakeSystem().withDataDir()
 	sys.uuidErr = errors.New("entropia indisponível")
+	sys.env["AGENT_UUID"] = "019e99e3-42f0-7882-9719-2305ff84949c"
+	sys.env["WORKSPACE"] = "prod"
+	_, f := resolve(sys)
+	if f == nil {
+		t.Fatal("esperava falha, obtive sucesso")
+	}
+	if f.code != 114 {
+		t.Fatalf("código de falha = %d (esperava 114)", f.code)
+	}
+	if f.variable != "MACHINE_ID" {
+		t.Errorf("variável reportada = %q", f.variable)
+	}
+}
+
+func TestResolve_MachineID_GeneratedInvalid114(t *testing.T) {
+	sys := newFakeSystem().withDataDir()
+	sys.uuid = "não-é-um-uuid-hex"
 	sys.env["AGENT_UUID"] = "019e99e3-42f0-7882-9719-2305ff84949c"
 	sys.env["WORKSPACE"] = "prod"
 	_, f := resolve(sys)
@@ -786,7 +858,7 @@ func TestValidators(t *testing.T) {
 
 	t.Run("hostname", func(t *testing.T) {
 		checkValidator(t, validHostname,
-			[]string{"node01", "a", "debv.tmsoft.com.br", "web-1.svc.cluster.local"},
+			[]string{"node01", "a", "node01.example.com", "web-1.svc.cluster.local"},
 			[]string{"", "-", ".", "...", "-host-", "host-", "node01.",
 				"com_underscore", strings.Repeat("h", maxHostnameLen+1),
 				strings.Repeat("h", maxLabelLen+1) + ".com"})
@@ -1031,5 +1103,141 @@ func TestResolve_MachineID_MissingExplicitFileUsesDefault(t *testing.T) {
 	}
 	if id.machineID != "aaaabbbbccccddddeeeeffff00001111" {
 		t.Errorf("machineID = %q (esperava o valor de %s)", id.machineID, DefaultMachineIDFile)
+	}
+}
+
+// ----- 001: Exfiltração via Symlink em DataDir & Não Ecoar Conteúdo Inválido -----
+
+func TestResolve_SymlinkInDataDirIsRefusedAndNeverEchoed(t *testing.T) {
+	secret := "JWT-super-secreto-de-servico-12345"
+	sys := newFakeSystem().withDataDir()
+	sys.env["MACHINE_ID"] = "abcdef0123456789abcdef0123456789"
+	sys.env["WORKSPACE"] = "prod"
+	sys.files["/etc/secret.token"] = secret + "\n"
+	sys.symlinks["/data/agent_uuid"] = "/etc/secret.token"
+
+	id, f := resolve(sys)
+	if f != nil {
+		t.Fatalf("falha inesperada: %+v", f)
+	}
+	// O symlink deve ter sido recusado (ReadDataPath / ReadFileNoFollow)
+	// gerando um novo UUID e NUNCA contendo o segredo nem nos warnings nem no debug.
+	if id.agentUUID == secret {
+		t.Errorf("agentUUID adotou o segredo do symlink!")
+	}
+	for _, w := range id.warnings {
+		if strings.Contains(w, secret) {
+			t.Errorf("warning vazou o segredo: %s", w)
+		}
+	}
+	for _, d := range id.debug {
+		if strings.Contains(d, secret) {
+			t.Errorf("debug vazou o segredo: %s", d)
+		}
+	}
+}
+
+// ----- 002: Erro de Stat em DataDir Mascarado como Ausente -----
+
+func TestResolve_DataDir_StatErrorAborts100(t *testing.T) {
+	sys := newFakeSystem()
+	sys.env["MACHINE_ID"] = "abcdef0123456789abcdef0123456789"
+	sys.env["AGENT_UUID"] = "019e99e3-42f0-7882-9719-2305ff84949c"
+	// Simula erro de permissão (EACCES) no Stat de /data
+	sys.statErr["/data"] = fs.ErrPermission
+
+	_, f := resolve(sys)
+	if f == nil {
+		t.Fatal("esperava falha com código 100 devido a EACCES no Stat(/data), mas resolve teve sucesso")
+	}
+	if f.code != 100 || f.variable != "DATADIR" {
+		t.Errorf("obtive code=%d variable=%s, esperava 100/DATADIR", f.code, f.variable)
+	}
+	if !strings.Contains(f.reason, "inacessível") {
+		t.Errorf("motivo não explicou inacessibilidade: %s", f.reason)
+	}
+}
+
+// ----- 004: MACHINE_ID_FILE Inutilizável Aborta 100 -----
+
+func TestResolve_MachineID_ExplicitDirOrUnusableAborts100(t *testing.T) {
+	t.Run("diretório", func(t *testing.T) {
+		sys := newFakeSystem().withDataDir()
+		sys.env["MACHINE_ID_FILE"] = "/etc/machine-id-dir"
+		sys.dirs["/etc/machine-id-dir"] = true
+
+		_, f := resolve(sys)
+		if f == nil {
+			t.Fatal("esperava erro ao apontar MACHINE_ID_FILE para diretório")
+		}
+		if f.code != 100 || f.variable != "MACHINE_ID_FILE" {
+			t.Errorf("obtive code=%d variable=%s, esperava 100/MACHINE_ID_FILE", f.code, f.variable)
+		}
+		if !strings.Contains(f.reason, "não é um arquivo comum utilizável") {
+			t.Errorf("motivo inesperado: %s", f.reason)
+		}
+	})
+
+	t.Run("arquivo maior que 4 KiB", func(t *testing.T) {
+		sys := newFakeSystem().withDataDir()
+		sys.env["MACHINE_ID_FILE"] = "/etc/huge-machine-id"
+		sys.files["/etc/huge-machine-id"] = "big"
+		sys.fileSizes["/etc/huge-machine-id"] = maxIdentFileSize + 1
+
+		_, f := resolve(sys)
+		if f == nil {
+			t.Fatal("esperava erro ao apontar MACHINE_ID_FILE para arquivo gigante")
+		}
+		if f.code != 100 || f.variable != "MACHINE_ID_FILE" {
+			t.Errorf("obtive code=%d variable=%s, esperava 100/MACHINE_ID_FILE", f.code, f.variable)
+		}
+	})
+}
+
+// ----- 005: Dependência Residual do Diretório de Trabalho (MACHINE_ID_FILE relativo) -----
+
+func TestResolve_MachineID_RelativePathAborts100(t *testing.T) {
+	sys := newFakeSystem().withDataDir()
+	sys.env["MACHINE_ID_FILE"] = "machine-id.relative"
+
+	_, f := resolve(sys)
+	if f == nil {
+		t.Fatal("esperava erro para MACHINE_ID_FILE relativo")
+	}
+	if f.code != 100 || f.variable != "MACHINE_ID_FILE" {
+		t.Errorf("obtive code=%d variable=%s, esperava 100/MACHINE_ID_FILE", f.code, f.variable)
+	}
+	if !strings.Contains(f.reason, "relativo ao diretório de trabalho") {
+		t.Errorf("motivo inesperado: %s", f.reason)
+	}
+}
+
+// ----- 006: Registro Regen Restaura Identidade Antiga com Aviso de Restauração -----
+
+func TestResolve_RegenRecord_RestoresAndWarnsRestored(t *testing.T) {
+	winner := "0190aaaa-bbbb-7ccc-8ddd-eeeeffff0000"
+	sys := newFakeSystem().withDataDir()
+	sys.env["MACHINE_ID"] = "abcdef0123456789abcdef0123456789"
+	sys.env["WORKSPACE"] = "prod"
+	sys.files["/data/agent_uuid"] = "corrupted-content\n"
+	sys.files["/data/.agent_uuid.regen"] = winner + "\n"
+
+	id, f := resolve(sys)
+	if f != nil {
+		t.Fatalf("falha inesperada: %+v", f)
+	}
+	if id.agentUUID != winner {
+		t.Errorf("agentUUID = %q (esperava adotar o registro %q)", id.agentUUID, winner)
+	}
+
+	foundRestoreWarn := false
+	for _, w := range id.warnings {
+		if strings.Contains(w, "foi RESTAURADO a partir do registro de regeneração") {
+			foundRestoreWarn = true
+			break
+		}
+	}
+	if !foundRestoreWarn {
+		t.Errorf("esperava aviso com 'foi RESTAURADO a partir do registro de regeneração', obtive warnings: %v", id.warnings)
 	}
 }

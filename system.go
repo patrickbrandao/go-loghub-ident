@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"time"
 
 	loghubuuid "github.com/patrickbrandao/go-loghub-uuid"
 )
@@ -38,8 +39,15 @@ type system interface {
 
 	// ReadFile lê o conteúdo de um arquivo, limitado a maxIdentFileSize.
 	// Devolve um erro que embrulha errInvalidSource se o caminho não for um
-	// arquivo comum ou exceder o limite.
+	// arquivo comum ou exceder o limite. Segue links simbólicos (usado para
+	// fontes do sistema como /etc/machine-id e $MACHINE_ID_FILE).
 	ReadFile(path string) ([]byte, error)
+
+	// ReadFileNoFollow é ReadFile para arquivos DENTRO de $DATADIR: um link
+	// simbólico é recusado (errInvalidSource) em vez de seguido. $DATADIR pode
+	// ser um volume compartilhado com outros UIDs; seguir um link ali deixaria
+	// um co-inquilino do volume escolher qual arquivo ESTE processo lê.
+	ReadFileNoFollow(path string) ([]byte, error)
 
 	// CreateExclusive grava data em path SOMENTE se path ainda não existir.
 	// Devolve (true, nil) se ESTE processo criou o arquivo e (false, nil) se
@@ -82,13 +90,27 @@ func (osSystem) Getenv(key string) string { return os.Getenv(key) }
 
 func (osSystem) Stat(path string) (os.FileInfo, error) { return os.Stat(path) }
 
-// ReadFile lê no máximo maxIdentFileSize bytes de um arquivo COMUM.
-func (osSystem) ReadFile(path string) ([]byte, error) {
-	// Stat NÃO abre o arquivo: um FIFO sem escritor é detectado sem bloquear,
-	// o que seria impossível se abríssemos primeiro.
-	info, err := os.Stat(path)
+// ReadFile lê no máximo maxIdentFileSize bytes de um arquivo COMUM, seguindo
+// links (fontes do SISTEMA: /etc/machine-id e $MACHINE_ID_FILE, que em algumas
+// distribuições são legitimamente symlinks).
+func (osSystem) ReadFile(path string) ([]byte, error) { return readRegular(path, true) }
+
+// ReadFileNoFollow lê um arquivo de $DATADIR sem seguir links.
+func (osSystem) ReadFileNoFollow(path string) ([]byte, error) { return readRegular(path, false) }
+
+func readRegular(path string, follow bool) ([]byte, error) {
+	stat := os.Stat
+	if !follow {
+		stat = os.Lstat
+	}
+	// Stat/Lstat NÃO abrem o arquivo: um FIFO sem escritor é detectado sem
+	// bloquear, o que seria impossível se abríssemos primeiro.
+	info, err := stat(path)
 	if err != nil {
 		return nil, err
+	}
+	if info.Mode()&fs.ModeSymlink != 0 {
+		return nil, fmt.Errorf("%w: %s é um link simbólico", errInvalidSource, path)
 	}
 	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("%w: %s não é um arquivo comum (%s)",
@@ -103,13 +125,34 @@ func (osSystem) ReadFile(path string) ([]byte, error) {
 		return nil, err
 	}
 	defer f.Close()
+	if !follow {
+		// Fecha a janela entre o Lstat e o Open: se a entrada foi trocada por
+		// um link nesse intervalo, o que abrimos não é o que inspecionamos.
+		opened, err := f.Stat()
+		if err != nil {
+			return nil, err
+		}
+		if !os.SameFile(info, opened) {
+			return nil, fmt.Errorf("%w: %s mudou entre a inspeção e a abertura",
+				errInvalidSource, path)
+		}
+	}
 	// O LimitReader cobre a janela TOCTOU entre o Stat e o Open.
 	return io.ReadAll(io.LimitReader(f, maxIdentFileSize))
 }
 
+// linkFile é os.Link, substituível nos testes para forçar o plano B de
+// CreateExclusive — que em produção só roda em filesystems sem hard link.
+var linkFile = os.Link
+
+const (
+	claimPoll = 20 * time.Millisecond
+	claimTTL  = 10 * time.Second // reivindicação mais velha que isso é de um processo morto
+)
+
 // CreateExclusive materializa o arquivo já completo e com a permissão certa,
-// via arquivo temporário + os.Link. O link é atômico em POSIX e falha com
-// ErrExist se o destino já existir, então nenhum leitor concorrente enxerga um
+// via arquivo temporário + linkFile (os.Link). O link é atômico em POSIX e falha
+// com ErrExist se o destino já existir, então nenhum leitor concorrente enxerga um
 // arquivo recém-criado e ainda vazio — janela que existiria com
 // O_CREATE|O_EXCL seguido de Write.
 func (osSystem) CreateExclusive(path string, data []byte, perm os.FileMode) (bool, error) {
@@ -119,29 +162,53 @@ func (osSystem) CreateExclusive(path string, data []byte, perm os.FileMode) (boo
 	}
 	defer os.Remove(tmp) // no caminho feliz o link já criou o destino
 
-	switch err := os.Link(tmp, path); {
+	switch err := linkFile(tmp, path); {
 	case err == nil:
 		syncDir(filepath.Dir(path))
 		return true, nil
 	case errors.Is(err, fs.ErrExist):
 		return false, nil // outro processo chegou primeiro
 	default:
-		// Filesystem sem suporte a hard link: recai para o O_EXCL direto, que
-		// continua sendo a garantia de exclusão mútua exigida aqui.
-		return createExclusiveDirect(path, data, perm)
+		// Filesystem sem suporte a hard link: o temporário já completo é
+		// publicado por rename, sob uma reivindicação O_EXCL à parte.
+		return createExclusiveDirect(path, tmp)
 	}
 }
 
-// createExclusiveDirect é o plano B de CreateExclusive.
-func createExclusiveDirect(path string, data []byte, perm os.FileMode) (bool, error) {
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
-	if errors.Is(err, fs.ErrExist) {
+// createExclusiveDirect é o plano B de CreateExclusive. O O_EXCL passa a um
+// arquivo de REIVINDICAÇÃO (path + ".claim"); o destino só aparece por rename
+// do temporário já completo, então nenhum leitor o vê vazio. Quem perde a
+// reivindicação espera o destino aparecer — ou a reivindicação expirar, se o
+// dono morreu entre reivindicar e renomear.
+func createExclusiveDirect(path, tmp string) (bool, error) {
+	claim := path + ".claim"
+	deadline := time.Now().Add(claimTTL + time.Second)
+	for {
+		c, err := os.OpenFile(claim, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err == nil {
+			c.Close()
+			break
+		}
+		if !errors.Is(err, fs.ErrExist) {
+			return false, err
+		}
+		if _, err := os.Lstat(path); err == nil {
+			return false, nil // destino completo: rename é atômico
+		}
+		if info, err := os.Lstat(claim); err == nil && time.Since(info.ModTime()) > claimTTL {
+			_ = os.Remove(claim) // dono morreu; devolve o nome à disputa
+			continue
+		}
+		if time.Now().After(deadline) {
+			return false, fmt.Errorf("%s: reivindicação %s não liberada", path, claim)
+		}
+		time.Sleep(claimPoll)
+	}
+	defer os.Remove(claim)
+	if _, err := os.Lstat(path); err == nil {
 		return false, nil
 	}
-	if err != nil {
-		return false, err
-	}
-	if err := writeSyncClose(f, data, perm); err != nil {
+	if err := os.Rename(tmp, path); err != nil {
 		return false, err
 	}
 	syncDir(filepath.Dir(path))

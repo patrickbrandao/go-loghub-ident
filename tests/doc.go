@@ -5,8 +5,10 @@
 // Estes arquivos ficam FORA da pasta principal de propósito: a raiz do
 // repositório guarda apenas o que é útil em produção. Aqui a biblioteca é
 // importada pelo seu caminho de módulo, exatamente como um projeto externo
-// faria — o que cobre justamente a camada que os testes unitários da raiz
-// não alcançam (Initialize e osSystem, ambos com 0% de cobertura).
+// faria — o que cobre justamente o que os testes unitários da raiz não
+// alcançam: Initialize (stderr e os.Exit) e a resolução completa sobre o
+// osSystem real. (system_test.go cobre osSystem isoladamente: ReadFile,
+// ReadFileNoFollow, CreateExclusive e ReplaceFile.)
 //
 // # Como os testes funcionam
 //

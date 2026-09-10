@@ -24,12 +24,13 @@ arquivos e fallbacks do sistema, e expostos por getters de pacote.
 
 ## 2. API pública
 
-A biblioteca expõe **apenas** uma função de inicialização e seis getters.
+A biblioteca expõe **apenas** uma função de inicialização, uma checagem de estado e seis getters.
 A struct interna que guarda os valores **não é exportada** — não há acesso a
 campos públicos.
 
 ```go
 func Initialize()        // resolve a identidade; encerra o processo em falha
+func IsInitialized() bool // informa se Initialize já concluiu com sucesso
 
 func DataDir()   string  // diretório de dados resolvido (ex.: "/data")
 func MachineID() string  // 32 hex [0-9a-f], sem hífen
@@ -214,12 +215,14 @@ Cadeia de resolução (4 níveis):
 1. Env `MACHINE_ID` — se presente e **inválida** → aborta **102**.
 2. Arquivo `$MACHINE_ID_FILE` (env; padrão `/etc/machine-id`). Conteúdo inválido
    neste nível → **cai** (não aborta). Tratamento de erro:
+   - env com caminho **relativo** → aborta com **código 100** e `MACHINE_ID_FILE`;
    - env apontando para arquivo **inexistente** → troca para `/etc/machine-id`;
    - env apontando para caminho **inacessível** (permissão negada, erro de I/O)
-     → aborta com **código 100** e a variável `MACHINE_ID_FILE`. Uma instrução
-     explícita do operador que não pôde ser cumprida não é silenciada;
+     ou **inutilizável** (diretório, fifo, device, ou acima de 4 KiB) → aborta com
+     **código 100** e a variável `MACHINE_ID_FILE`. Uma instrução explícita do
+     operador que não pôde ser cumprida não é silenciada;
    - o `/etc/machine-id` **padrão** (env ausente) continua best-effort:
-     ilegível ou inexistente, apenas cai para o próximo nível.
+     ilegível, inexistente ou inválido, apenas cai para o próximo nível.
 3. Arquivo `$DATADIR/machine_id` (auto-gerido). Vazio/inválido → cai, com
    **aviso obrigatório em stderr** (ver §12).
 4. **Gerar:** UUIDv7 (`Level1`) com hífens removidos → 32 hex; gravar em
@@ -357,8 +360,8 @@ em modo debug, linhas de diagnóstico podem precedê-la.
 
 | Código | Variável     | Motivo                                                         |
 |--------|--------------|----------------------------------------------------------------|
-| 100    | `DATADIR`    | diretório necessário ausente, não é diretório, caminho relativo, ou erro de I/O |
-| 100    | `MACHINE_ID_FILE` | caminho informado pelo operador está inacessível (não é "inexistente") |
+| 100    | `DATADIR`    | diretório necessário ausente, não é diretório, caminho relativo, erro de I/O, ou link simbólico recusado |
+| 100    | `MACHINE_ID_FILE` | caminho informado está inacessível, relativo, ou não é arquivo comum utilizável (diretório, fifo, device, > 4 KiB) |
 | 102    | `MACHINE_ID` | env presente não casa com `^[0-9a-f]{32}$`                      |
 | 103    | `AGENT_NAME` | todas as fontes vazias (`argv[0]` saneado ficou vazio)         |
 | 104    | `AGENT_NAME` | valor não casa com `^[a-z0-9._-]+$`                             |
@@ -431,6 +434,13 @@ ENTRYPOINT ["/my-service"]
   qualquer acesso a `$DATADIR`.
 - Para identidade estável entre reinícios, monte um volume e aponte `DATADIR`
   para ele; deixe `machine_id` e `agent_uuid` serem gerados na 1ª execução.
+- **Não compartilhe o volume gravável entre pods/containers independentes:**
+  processos que compartilham o mesmo `$DATADIR` convergem para a mesma identidade
+  (`machine_id` e `agent_uuid`), o que causará duplicidade e confusão no
+  servidor Loghub. O compartilhamento de volume só deve ocorrer entre containers
+  que intencionalmente compõem a mesma réplica física (ex.: sidecars do mesmo pod).
+- **Segurança com links simbólicos:** arquivos em `$DATADIR` não seguem symlinks
+  (`O_NOFOLLOW`), protegendo contra vazamentos de dados fora do volume montado.
 - Trate os códigos de saída no orquestrador: a faixa 100–114 indica
   precisamente qual variável/etapa falhou.
 - Use `LOGHUB_IDENT_DEBUG=1` ao diagnosticar de onde cada valor veio.

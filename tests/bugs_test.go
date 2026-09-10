@@ -24,7 +24,8 @@ import (
 
 // TestFix_BUG01_BoundedRead: $MACHINE_ID_FILE apontando para um FIFO sem
 // escritor travava o boot para sempre, porque o os.ReadFile bloqueava no open.
-// Hoje a fonte é descartada sem abrir o arquivo e a cadeia segue.
+// Hoje a fonte é descartada sem abrir o arquivo e, por ser instrução explícita
+// que não pode ser cumprida (Task 004 / SPEC §7.2), aborta com ExitConfig (100).
 func TestFix_BUG01_BoundedRead(t *testing.T) {
 	fifo := makeFIFO(t)
 
@@ -33,17 +34,16 @@ func TestFix_BUG01_BoundedRead(t *testing.T) {
 	delete(env, "MACHINE_ID")
 
 	res := runTimeout(t, env, 10*time.Second)
-	if res.code != 0 {
-		t.Fatalf("exit=%d (esperava 0, caindo para o próximo nível)\nstderr:\n%s", res.code, res.stderr)
-	}
-	if !reMachineID.MatchString(res.field(t, "MACHINE_ID")) {
-		t.Errorf("MACHINE_ID = %q", res.field(t, "MACHINE_ID"))
+	checkFailure(t, res, 100, "MACHINE_ID_FILE")
+	if !strings.Contains(res.stderr, "não é um arquivo comum utilizável") {
+		t.Errorf("stderr esperava menção a arquivo não utilizável: %s", res.stderr)
 	}
 }
 
 // TestFix_BUG01_HugeFileRejected: um arquivo grande demais para conter uma
 // identidade é recusado sem ser inteiramente carregado. Com /dev/zero o
-// comportamento antigo consumia ~8,9 GB de RSS em 6 s.
+// comportamento antigo consumia ~8,9 GB de RSS em 6 s. Por ser instrução
+// explícita que excede o limite (Task 004 / SPEC §7.2), aborta com ExitConfig (100).
 func TestFix_BUG01_HugeFileRejected(t *testing.T) {
 	env := withDataDir(t)
 	delete(env, "MACHINE_ID")
@@ -60,8 +60,9 @@ func TestFix_BUG01_HugeFileRejected(t *testing.T) {
 	env["MACHINE_ID_FILE"] = big
 
 	res := runTimeout(t, env, 10*time.Second)
-	if res.code != 0 {
-		t.Fatalf("exit=%d (esperava 0: fonte inválida deve cair para o próximo nível)\nstderr:\n%s", res.code, res.stderr)
+	checkFailure(t, res, 100, "MACHINE_ID_FILE")
+	if !strings.Contains(res.stderr, "não é um arquivo comum utilizável") {
+		t.Errorf("stderr esperava menção a arquivo não utilizável: %s", res.stderr)
 	}
 }
 
@@ -159,24 +160,30 @@ func TestFix_BUG04_ConcurrentStartupAgrees(t *testing.T) {
 		dir := env["DATADIR"]
 
 		var (
-			mu    sync.Mutex
-			seen  = map[string]int{}
-			wg    sync.WaitGroup
-			start = make(chan struct{})
+			results = make([]result, procs)
+			errs    = make([]error, procs)
+			wg      sync.WaitGroup
+			start   = make(chan struct{})
 		)
 		for i := 0; i < procs; i++ {
 			wg.Add(1)
-			go func() {
+			go func(i int) {
 				defer wg.Done()
 				<-start // largada simultânea
-				res := run(t, env)
-				mu.Lock()
-				defer mu.Unlock()
-				seen[res.field(t, "AGENT_UUID")]++
-			}()
+				results[i], errs[i] = execHelper(t, env, options{})
+			}(i)
 		}
 		close(start)
 		wg.Wait()
+
+		seen := map[string]int{}
+		for i, res := range results {
+			if errs[i] != nil || res.code != 0 {
+				t.Fatalf("rodada %d, processo %d: err=%v exit=%d\nstderr:\n%s",
+					round, i, errs[i], res.code, res.stderr)
+			}
+			seen[res.field(t, "AGENT_UUID")]++
+		}
 
 		if len(seen) != 1 {
 			t.Fatalf("rodada %d: %d AGENT_UUIDs distintos entre %d processos: %v", round, len(seen), procs, seen)
@@ -223,24 +230,30 @@ func TestFix_BUG04_CorruptRegenerationAgrees(t *testing.T) {
 				writeFile(t, dir, tc.file, tc.seed+"\n")
 
 				var (
-					mu    sync.Mutex
-					seen  = map[string]int{}
-					wg    sync.WaitGroup
-					start = make(chan struct{})
+					results = make([]result, procs)
+					errs    = make([]error, procs)
+					wg      sync.WaitGroup
+					start   = make(chan struct{})
 				)
 				for i := 0; i < procs; i++ {
 					wg.Add(1)
-					go func() {
+					go func(i int) {
 						defer wg.Done()
 						<-start // largada simultânea
-						res := run(t, env)
-						mu.Lock()
-						defer mu.Unlock()
-						seen[res.field(t, tc.field)]++
-					}()
+						results[i], errs[i] = execHelper(t, env, options{})
+					}(i)
 				}
 				close(start)
 				wg.Wait()
+
+				seen := map[string]int{}
+				for i, res := range results {
+					if errs[i] != nil || res.code != 0 {
+						t.Fatalf("rodada %d, processo %d: err=%v exit=%d\nstderr:\n%s",
+							round, i, errs[i], res.code, res.stderr)
+					}
+					seen[res.field(t, tc.field)]++
+				}
 
 				if len(seen) != 1 {
 					t.Fatalf("rodada %d: %d valores distintos de %s entre %d processos: %v",
@@ -456,7 +469,7 @@ func TestFix_BUG11_RejectsDegenerateHostnames(t *testing.T) {
 	}
 
 	t.Run("hostnames válidos continuam passando", func(t *testing.T) {
-		for _, good := range []string{"node01", "debv.tmsoft.com.br", "a", "web-1.svc.cluster.local"} {
+		for _, good := range []string{"node01", "node01.example.com", "a", "web-1.svc.cluster.local"} {
 			env := fullEnv()
 			env["HOSTNAME"] = good
 			if res := run(t, env); res.code != 0 {

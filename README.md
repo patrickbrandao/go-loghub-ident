@@ -33,8 +33,7 @@ module ident-test
 
 go 1.22
 
-require github.com/patrickbrandao/go-loghub-uuid  v0.1.0
-require github.com/patrickbrandao/go-loghub-ident v0.2.0
+require github.com/patrickbrandao/go-loghub-ident v0.3.0
 ```
 
 Arquivo: main.go
@@ -81,10 +80,10 @@ Rodar:
 ```bash
 ./ident-test;
     # DataDir:   /data
-    # MachineID: 79fb72c3199f4b85978420223a389b94
+    # MachineID: 0123456789abcdef0123456789abcdef
     # AgentName: ident-test
-    # AgentUUID: 019e9e7e-bc45-76b6-8351-4430b52c4070
-    # Hostname:  debv.tmsoft.com.br
+    # AgentUUID: 018f3a5b-7c8d-7e9f-8a1b-2c3d4e5f6a7b
+    # Hostname:  node01.example.com
     # Workspace: default
 ```
 
@@ -97,18 +96,21 @@ Rodar:
   criar qualquer goroutine que vá ler os getters. Esse contrato é o que torna a
   leitura concorrente segura sem sincronização.
 - Uma segunda chamada a `Initialize()` encerra o processo com **código 112**.
+- Antes de `Initialize()`, todos os getters devolvem `""` (zero value). Use
+  `IsInitialized()` para validar em runtime se a inicialização já ocorreu.
 
 ## API
 
-| Função          | Retorno  | Descrição                                  |
-|-----------------|----------|--------------------------------------------|
-| `Initialize()`  | —        | resolve a identidade; encerra em falha     |
-| `DataDir()`     | `string` | diretório de dados                         |
-| `MachineID()`   | `string` | id da máquina (32 hex, sem hífen)          |
-| `AgentName()`   | `string` | nome do agente                             |
-| `AgentUUID()`   | `string` | UUIDv7 canônico (com hífens)               |
-| `Hostname()`    | `string` | hostname                                   |
-| `Workspace()`   | `string` | workspace/tenant                           |
+| Função            | Retorno  | Descrição                                  |
+|-------------------|----------|--------------------------------------------|
+| `Initialize()`    | —        | resolve a identidade; encerra em falha     |
+| `IsInitialized()` | `bool`   | informa se Initialize concluiu com sucesso |
+| `DataDir()`       | `string` | diretório de dados                         |
+| `MachineID()`     | `string` | id da máquina (32 hex, sem hífen)          |
+| `AgentName()`     | `string` | nome do agente                             |
+| `AgentUUID()`     | `string` | UUIDv7 canônico (com hífens)               |
+| `Hostname()`      | `string` | hostname                                   |
+| `Workspace()`     | `string` | workspace/tenant                           |
 
 ## Resolução de cada campo
 
@@ -168,7 +170,18 @@ valem as regras que uma classe não expressa:
   compatível com filesystem read-only. Se alguma env faltar, o `$DATADIR` é
   apenas **lido**: um diretório ausente é tratado como fonte ausente e a cadeia
   segue para o fallback. Ele só é **obrigatório** quando há identidade a gerar e
-  persistir (`machine_id`, `agent_uuid`).
+  persistir (`machine_id`, `agent_uuid`). Erros de permissão ou I/O ao verificar
+  ou ler o diretório abortam com código 100.
+- **Segurança e symlinks:** arquivos de identidade dentro de `$DATADIR` são lidos
+  sem seguir links simbólicos (`O_NOFOLLOW`). Um link simbólico é recusado,
+  impedindo exfiltração de arquivos sensíveis do host ou container. Além disso,
+  avisos de erro nunca expõem o conteúdo bruto de arquivos inválidos.
+- **Atenção ao compartilhamento de volume:** réplicas ou containers independentes
+  NUNCA devem compartilhar o mesmo volume montado em `$DATADIR` para escrita.
+  Processos que compartilham o `$DATADIR` convergem para a mesma identidade
+  (`machine_id` e `agent_uuid`), gerando colisão de nós no servidor Loghub. O
+  compartilhamento de volume gravável só é aceitável entre processos do mesmo nó
+  (ex.: sidecars de um mesmo pod) que intencionalmente compartilham a identidade.
 
 ## Diagnóstico
 
@@ -179,10 +192,10 @@ inclusive — com a origem do valor (`env` / `file` / `generated` / `fallback`) 
 
 ```
 lib-loghub-ident: debug: DATADIR: env = "/data"
-lib-loghub-ident: debug: MACHINE_ID: file /etc/machine-id = "79fb72c3199f4b85978420223a389b94"
+lib-loghub-ident: debug: MACHINE_ID: file /etc/machine-id = "0123456789abcdef0123456789abcdef"
 lib-loghub-ident: debug: AGENT_NAME: fallback argv[0] = "ident-test"
-lib-loghub-ident: debug: AGENT_UUID: generated = "019e9e7e-bc45-76b6-8351-4430b52c4070"
-lib-loghub-ident: debug: HOSTNAME: os.Hostname = "debv.tmsoft.com.br"
+lib-loghub-ident: debug: AGENT_UUID: generated = "018f3a5b-7c8d-7e9f-8a1b-2c3d4e5f6a7b"
+lib-loghub-ident: debug: HOSTNAME: os.Hostname = "node01.example.com"
 lib-loghub-ident: debug: WORKSPACE: fallback = "default"
 ```
 
@@ -197,7 +210,7 @@ que **descarta uma identidade persistida** — um `$DATADIR/machine_id` ou
 substituir:
 
 ```
-lib-loghub-ident: aviso: MACHINE_ID: /data/machine_id tinha conteúdo inválido ("1111222233334444") e será REGERADO; a identidade desta máquina muda a partir de agora
+lib-loghub-ident: aviso: MACHINE_ID: /data/machine_id tinha conteúdo inválido (16 bytes, hash ...) e será REGERADO; a identidade desta máquina muda a partir de agora
 ```
 
 Sem esse aviso, um agente voltaria com outro `machine_id` depois de um crash e
@@ -211,8 +224,8 @@ chama `os.Exit(<código>)`.
 
 | Código | Variável     | Motivo                                                 |
 |--------|--------------|--------------------------------------------------------|
-| 100    | `DATADIR`    | diretório necessário ausente, não é diretório, caminho relativo, ou erro de I/O |
-| 100    | `MACHINE_ID_FILE` | caminho informado está inacessível (não é "inexistente")  |
+| 100    | `DATADIR`    | diretório necessário ausente, não é diretório, caminho relativo, erro de I/O, ou symlink recusado |
+| 100    | `MACHINE_ID_FILE` | caminho informado está inacessível, relativo, ou não é arquivo comum utilizável (diretório, fifo, device, > 4 KiB) |
 | 102    | `MACHINE_ID` | env não casa com `^[0-9a-f]{32}$`                       |
 | 103    | `AGENT_NAME` | todas as fontes vazias (`argv[0]` ficou vazio)        |
 | 104    | `AGENT_NAME` | valor não casa com `^[a-z0-9._-]+$`                     |

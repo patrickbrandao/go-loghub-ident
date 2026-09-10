@@ -11,7 +11,7 @@ testa a função pura `resolve` com um `system` injetado.
 | `exitcodes_test.go` | a tabela de códigos de saída da SPEC §13, ponta a ponta               |
 | `bugs_test.go`      | regressões dos defeitos de [`REPORT-01`](../tasks/REPORT-01.md) e [`REPORT-03`](../tasks/REPORT-03.md) |
 | `bugs2_test.go`     | regressões dos defeitos de [`REPORT-02`](../tasks/REPORT-02.md)       |
-| `bench_test.go`     | custo dos getters, da validação por regex e de um boot completo       |
+| `bench_test.go`     | custo dos getters, da validação (regex vs. manual) e de um boot completo |
 
 ## Como funciona
 
@@ -73,10 +73,11 @@ padrão, afirmava o comportamento esperado depois dela. Com os defeitos
 corrigidos, os `TestChar_` cumpriram seu papel e saíram; os `TestFix_` ficaram
 para impedir que qualquer um dos bugs volte.
 
-Dois códigos de saída não são alcançáveis por fora da biblioteca, porque exigem
-que `GenerateUUIDv7` ou `os.Hostname` falhem: **105**/**114** (geração de UUID)
-e **108** (hostname do SO). Eles são cobertos pelos testes unitários da raiz,
-com o `fakeSystem`.
+Três códigos de saída não são alcançáveis por fora da biblioteca, porque exigem
+que `GenerateUUIDv7` ou `os.Hostname` falhem: **105** e **114** (geração de
+UUID para `AGENT_UUID` e `MACHINE_ID`) e **108** (hostname do SO). Eles são
+cobertos pelos testes unitários da raiz (`../resolve_test.go`), com o
+`fakeSystem`.
 
 ## Benchmarks
 

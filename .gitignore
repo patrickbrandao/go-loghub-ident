@@ -16,3 +16,9 @@ coverage.txt
 
 # Variáveis de ambiente locais
 .env
+
+# Rascunhos e anotações locais
+notes/
+
+# Tarefas de correcao e melhorias
+tasks/

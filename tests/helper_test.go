@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -102,6 +103,9 @@ func runArgv0(t *testing.T, env map[string]string, argv0 string) result {
 // de observar a permissão efetiva dos arquivos gravados em $DATADIR.
 func runUmask(t *testing.T, env map[string]string, umask string) result {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("umask e /bin/sh são POSIX")
+	}
 	return runOpts(t, env, options{umask: umask})
 }
 
@@ -124,7 +128,16 @@ func runBench(b *testing.B, env map[string]string) (code int, stderr string) {
 
 func runOpts(t testing.TB, env map[string]string, opt options) result {
 	t.Helper()
+	res, err := execHelper(t, env, opt)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+	return res
+}
 
+// execHelper é runOpts sem t.Fatalf: pode ser chamado de qualquer goroutine.
+// Só usa t para coverDir (t.Logf), que não encerra nada.
+func execHelper(t testing.TB, env map[string]string, opt options) (result, error) {
 	limit := opt.limit
 	if limit == 0 {
 		limit = 60 * time.Second
@@ -132,7 +145,7 @@ func runOpts(t testing.TB, env map[string]string, opt options) result {
 
 	exe, err := os.Executable()
 	if err != nil {
-		t.Fatalf("os.Executable(): %v", err)
+		return result{}, fmt.Errorf("os.Executable(): %w", err)
 	}
 
 	cmd := exec.Command(exe)
@@ -147,13 +160,6 @@ func runOpts(t testing.TB, env map[string]string, opt options) result {
 	cmd.Dir = opt.dir
 	cmd.Env = append([]string{envHelper + "=1"}, flatten(env)...)
 	if dir := coverDir(t); dir != "" {
-		// Sob "go test -cover" o subprocesso também é instrumentado. Sem
-		// GOCOVERDIR ele despeja um aviso em stderr — que contaminaria os
-		// testes que inspecionam a saída de erro. Com a variável definida, o
-		// aviso some E os contadores do subprocesso são preservados; para
-		// somá-los ao perfil principal use:
-		//
-		//	go tool covdata textfmt -i=<dir> -o=cover.out
 		cmd.Env = append(cmd.Env, "GOCOVERDIR="+dir)
 	}
 
@@ -162,7 +168,7 @@ func runOpts(t testing.TB, env map[string]string, opt options) result {
 	cmd.Stderr = &stderr
 
 	if err := cmd.Start(); err != nil {
-		t.Fatalf("start do helper: %v", err)
+		return result{}, fmt.Errorf("start do helper: %w", err)
 	}
 
 	done := make(chan error, 1)
@@ -171,7 +177,11 @@ func runOpts(t testing.TB, env map[string]string, opt options) result {
 	res := result{code: -1}
 	select {
 	case err := <-done:
-		res.code = exitCode(t, err)
+		code, cerr := exitCodeErr(err)
+		if cerr != nil {
+			return result{}, cerr
+		}
+		res.code = code
 	case <-time.After(limit):
 		_ = cmd.Process.Kill()
 		<-done
@@ -181,7 +191,7 @@ func runOpts(t testing.TB, env map[string]string, opt options) result {
 	res.stdout = stdout.String()
 	res.stderr = stripToolchainWarnings(stderr.String())
 	res.fields = parseFields(res.stdout)
-	return res
+	return res, nil
 }
 
 // coverDirOnce protege a criação do diretório de cobertura dos subprocessos.
@@ -233,15 +243,22 @@ func stripToolchainWarnings(stderr string) string {
 // exitCode extrai o código de saída do erro devolvido por cmd.Wait.
 func exitCode(t testing.TB, err error) int {
 	t.Helper()
+	code, cerr := exitCodeErr(err)
+	if cerr != nil {
+		t.Fatalf("%v", cerr)
+	}
+	return code
+}
+
+func exitCodeErr(err error) (int, error) {
 	if err == nil {
-		return 0
+		return 0, nil
 	}
 	var ee *exec.ExitError
 	if errors.As(err, &ee) {
-		return ee.ExitCode()
+		return ee.ExitCode(), nil
 	}
-	t.Fatalf("erro inesperado ao esperar o helper: %v", err)
-	return -1
+	return -1, fmt.Errorf("erro inesperado ao esperar o helper: %w", err)
 }
 
 // flatten converte o mapa de env em "CHAVE=valor".

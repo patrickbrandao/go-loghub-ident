@@ -120,18 +120,23 @@ func readRegular(path string, follow bool) ([]byte, error) {
 		return nil, fmt.Errorf("%w: %s tem %d bytes, acima do limite de %d",
 			errInvalidSource, path, info.Size(), maxIdentFileSize)
 	}
-	f, err := os.Open(path)
+	f, err := openRegular(path)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
+
+	opened, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !opened.Mode().IsRegular() {
+		return nil, fmt.Errorf("%w: %s não é um arquivo comum (%s)",
+			errInvalidSource, path, opened.Mode().Type())
+	}
 	if !follow {
 		// Fecha a janela entre o Lstat e o Open: se a entrada foi trocada por
 		// um link nesse intervalo, o que abrimos não é o que inspecionamos.
-		opened, err := f.Stat()
-		if err != nil {
-			return nil, err
-		}
 		if !os.SameFile(info, opened) {
 			return nil, fmt.Errorf("%w: %s mudou entre a inspeção e a abertura",
 				errInvalidSource, path)

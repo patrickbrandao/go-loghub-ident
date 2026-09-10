@@ -70,6 +70,30 @@ func TestExit100_ReadIOError(t *testing.T) {
 	checkFailure(t, run(t, env), 100, "DATADIR")
 }
 
+// 100 — link simbólico sob $DATADIR é recusado por segurança (SPEC §4, §13).
+func TestExit100_SymlinkInDataDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks no Windows exigem privilégios elevados")
+	}
+	env := without(withDataDir(t), "AGENT_UUID")
+	target := filepath.Join(t.TempDir(), "alvo")
+	if err := os.WriteFile(target, []byte("segredo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(env["DATADIR"], "agent_uuid")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	checkFailure(t, run(t, env), 100, "DATADIR")
+}
+
+// 100 — DATADIR contendo caractere de controle é rejeitado (SPEC §5, §13).
+func TestExit100_ControlCharInDataDir(t *testing.T) {
+	env := fullEnv()
+	env["DATADIR"] = "/data\nevil"
+	checkFailure(t, run(t, env), 100, "DATADIR")
+}
+
 // 102 — env MACHINE_ID não casa com ^[0-9a-f]{32}$.
 func TestExit102_MachineIDInvalid(t *testing.T) {
 	for _, bad := range []string{"nao-hex", "abcdef", strings.Repeat("f", 33), "ABCDEFG0123456789abcdef012345678"} {
@@ -174,6 +198,9 @@ func TestExit112_InitializeTwice(t *testing.T) {
 	res := run(t, env)
 	if res.code != 112 {
 		t.Fatalf("exit=%d (esperava 112)\nstderr:\n%s", res.code, res.stderr)
+	}
+	if !strings.HasPrefix(res.stderr, "lib-loghub-ident: geral: ") {
+		t.Errorf("stderr não começa com 'lib-loghub-ident: geral: ':\n%s", res.stderr)
 	}
 	if !strings.Contains(res.stderr, "mais de uma vez") {
 		t.Errorf("stderr não explica a causa:\n%s", res.stderr)

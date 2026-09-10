@@ -1,7 +1,7 @@
 # AGENTS.md — Guia do Projeto e Orientações para Agentes de IA
 
 > Este documento serve como manual técnico, arquitetural e operacional para qualquer agente de IA ou desenvolvedor atuando no repositório [`go-loghub-ident`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident).
-> Ele resume a especificação contida em [`SPEC.md`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/SPEC.md), mapeia todos os componentes da base de código e estabelece as regras estritas de implementação e testes.
+> Ele resume as especificações canônicas modulares contidas em [`docs/00-INDEX.md`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/docs/00-INDEX.md), mapeia todos os componentes da base de código e estabelece as regras estritas de implementação e testes.
 
 ---
 
@@ -41,27 +41,35 @@ Aqui está a localização exata de cada arquivo do projeto e suas respectivas r
 | [`system.go`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/system.go) | Interface abstrata [`system`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/system.go#L33) para operações de I/O do SO e implementação concreta [`osSystem`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/system.go#L87). Operações de leitura com limite de 4 KiB, `ReadFileNoFollow`, criação exclusiva com `os.Link` e fallback para trava `.claim` com TTL de 10s, gravação atômica via `os.CreateTemp` + `ReplaceFile`, `fsync` de arquivo e de diretório. |
 | [`resolve_test.go`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/resolve_test.go) | Suíte completa de testes unitários isolados utilizando o mock [`fakeSystem`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/resolve_test.go#L15). Testa exaustivamente cada nível da cadeia de fallbacks, regras de saneamento, erros simulados de I/O e todos os códigos de saída. |
 | [`system_test.go`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/system_test.go) | Testes unitários focados nas primitivas de baixo nível do SO em [`osSystem`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/system.go#L87): verificação de recusa de links simbólicos, atomicidade de escrita, durabilidade de permissões e comportamento do plano B (`claim`). |
-| [`SPEC.md`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/SPEC.md) | **Especificação Canônica do Projeto (Fonte da Verdade)**. Contém os requisitos funcionais e não-funcionais detalhados, tabela de códigos de saída e decisões de design. |
+| [`SPEC.md`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/SPEC.md) | Sumário executivo da especificação e ponteiro unificado para a suíte canônica em `docs/`. |
 | [`README.md`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/README.md) | Documentação de apresentação da biblioteca, instruções de uso básico, exemplos de compilação multiplataforma e tabelas resumidas. |
 | [`CLAUDE.md`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/CLAUDE.md) | Ponteiro rápido (`@AGENTS.md`) para agentes baseados na CLI Claude/Anthropic. |
 | [`go.mod`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/go.mod) / [`go.sum`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/go.sum) | Módulo Go (versão mínima `go 1.22`). Dependência única: `github.com/patrickbrandao/go-loghub-uuid v0.1.0`. |
 
 ### Subdiretórios
 
+- **[`docs/`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/docs)**: **Especificações Técnicas Canônicas e Modulares do Projeto** (suficientes para refatorar a lib do zero com 100% de conformidade):
+  - [`docs/00-INDEX.md`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/docs/00-INDEX.md): Índice geral, mapa de navegação e blueprint de refatoração do zero.
+  - [`docs/01-ARCHITECTURE-AND-API.md`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/docs/01-ARCHITECTURE-AND-API.md): Identidade do módulo, campos, API pública, concorrência e abstração `system`.
+  - [`docs/02-PIPELINE-AND-VALIDATION.md`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/docs/02-PIPELINE-AND-VALIDATION.md): Pipeline universal de saneamento e validadores manuais byte a byte sem `regexp`.
+  - [`docs/03-FIELDS-RESOLUTION-AND-FALLBACKS.md`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/docs/03-FIELDS-RESOLUTION-AND-FALLBACKS.md): Matriz de resolução dos 6 campos, precedências e fallbacks.
+  - [`docs/04-PERSISTENCE-CONCURRENCY-AND-SAFETY.md`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/docs/04-PERSISTENCE-CONCURRENCY-AND-SAFETY.md): Gravação durável (`fsync`), `CreateExclusive`, `.claim`, `readSettled` e `.regen`.
+  - [`docs/05-OBSERVABILITY-AND-EXIT-CODES.md`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/docs/05-OBSERVABILITY-AND-EXIT-CODES.md): Observabilidade, `LOGHUB_IDENT_DEBUG`, avisos e tabela de códigos de saída 100 a 114.
+  - [`docs/06-ENGINEERING-LESSONS-AND-ANTI-REGRESSION.md`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/docs/06-ENGINEERING-LESSONS-AND-ANTI-REGRESSION.md): Catálogo de lições e prevenção de bugs (BUG-01 a BUG-20).
+  - [`docs/07-TESTING-STRATEGY.md`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/docs/07-TESTING-STRATEGY.md): Estratégia de testes em duas camadas, harness e metas de benchmark.
+  - [`docs/08-RELEASE-GUIDE.md`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/docs/08-RELEASE-GUIDE.md): Ciclo de versionamento semântico, imutabilidade de tags e publicação.
+- **[`skill/`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/skill)**: **Skill Exportável para Agentes de IA e Projetos Consumidores**:
+  - [`skill/SKILL.md`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/skill/SKILL.md): Guia unificado de adoção rápida e operação de produção (unificação de DEPLOY-FAST e DEPLOY-FULL).
+  - [`skill/references/`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/skill/references): Manuais aprofundados de configuração e troubleshooting.
+  - [`skill/examples/`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/skill/examples): Exemplos práticos em Go, Dockerfile distroless e Pod Kubernetes.
 - **[`tests/`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/tests)**: Suíte de testes de integração ponta a ponta contra o sistema operacional real via subprocessos.
-  - [`tests/helper_test.go`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/tests/helper_test.go): Harness de subprocesso baseado em `TestMain` e `LOGHUB_IDENT_HELPER=1`. Permite capturar stdout, stderr e código de saída de [`Initialize()`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/initialize.go#L34).
-  - [`tests/api_test.go`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/tests/api_test.go): Testes de caminho feliz, precedências env vs arquivo vs fallbacks reais e persistência em disco temporário.
-  - [`tests/exitcodes_test.go`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/tests/exitcodes_test.go): Validação automatizada de todos os códigos de saída (`100` a `114`) contra o binário real.
+  - [`tests/helper_test.go`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/tests/helper_test.go): Harness de subprocesso baseado em `TestMain` e `LOGHUB_IDENT_HELPER=1`.
+  - [`tests/api_test.go`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/tests/api_test.go): Testes de caminho feliz, precedências e persistência em disco temporário.
+  - [`tests/exitcodes_test.go`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/tests/exitcodes_test.go): Validação automatizada de todos os códigos de saída (`100` a `114`).
   - [`tests/bugs_test.go`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/tests/bugs_test.go) & [`tests/bugs2_test.go`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/tests/bugs2_test.go): Testes de regressão permanentes (`TestFix_BUGxx`).
   - [`tests/bench_test.go`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/tests/bench_test.go): Benchmarks de alocação e latência dos getters, validadores manuais e ciclo de boot.
-  - [`tests/doc.go`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/tests/doc.go) & [`tests/README.md`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/tests/README.md): Documentação detalhada da pasta de integração.
-- **[`examples/minimal/`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/examples/minimal)**: Exemplo executável de aplicação consumindo a biblioteca:
-  - [`examples/minimal/main.go`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/examples/minimal/main.go): Demonstração de uso no mundo real.
-- **[`docs/`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/docs)**: Documentação estendida:
-  - [`docs/DEPLOY-FAST.md`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/docs/DEPLOY-FAST.md): Guia de 2 minutos para adoção rápida.
-  - [`docs/DEPLOY-FULL.md`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/docs/DEPLOY-FULL.md): Manual exaustivo de parametrização, variáveis e comportamento operacional.
-  - [`docs/RELEASE.md`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/docs/RELEASE.md): Checklist e comandos para lançamento de novas versões (SemVer, tags anotadas e GitHub releases).
-- **[`tasks/`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/tasks)**: Registros de pendências e tarefas internas (rastreado por `.gitkeep`).
+  - [`tests/doc.go`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/tests/doc.go) & [`tests/README.md`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/tests/README.md): Documentação da suíte de integração.
+- **[`tasks/`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/tasks)**: Registros de auditoria internas e pendências temporárias (pasta não versionada, listada no `.gitignore`).
 
 ---
 
@@ -81,9 +89,9 @@ Toda fonte textual (seja lida de variável de ambiente ou da primeira linha de u
 
 | Campo | Variável de Ambiente | Cadeia de Precedência de Fallback | Validação & Restrições | Persistência em `$DATADIR`? | Códigos de Erro |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **`DATADIR`** | `DATADIR` | Padrão: `/data` | Deve ser caminho absoluto (`rootedPath`). Existência checada de forma lazy. | Diretório raiz de dados. **Não é criado pela lib**. | **100** (caminho relativo, inexistente na gravação, não é diretório, erro I/O, symlink) |
-| **`MACHINE_ID`** | `MACHINE_ID` | 1. `$MACHINE_ID_FILE` (def: `/etc/machine-id`)<br>2. `$DATADIR/machine_id`<br>3. Geração local de UUIDv7 (sem `-`) | `^[0-9a-f]{32}$` (32 caracteres hexadecimais após strip de hífens). | **Sim** (somente quando gerado aleatoriamente). Permissão `0644`. | **100** (`MACHINE_ID_FILE` relativo/inacessível/inválido),<br>**102** (env presente inválida),<br>**113** (falha escrita),<br>**114** (falha geração UUID) |
-| **`AGENT_NAME`** | `AGENT_NAME` | 1. `$DATADIR/agent_name`<br>2. `argv[0]` (nome base do binário sem `.exe`) | `^[a-z0-9._-]+$`, máx. 64 caracteres. **Rejeita `.` e `..`**. | **Não** (fallback `argv[0]` é determinístico). | **103** (todas as fontes vazias / `argv[0]` vazio),<br>**104** (valor não casa com regex/tamanho) |
+| **`DATADIR`** | `DATADIR` | Padrão: `/data` | Deve ser caminho absoluto (`rootedPath`) e sem controles. Existência checada de forma lazy. | Diretório raiz de dados. **Não é criado pela lib**. | **100** (caminho relativo ou com controle, inexistente na gravação, não é diretório, erro I/O, symlink recusado) |
+| **`MACHINE_ID`** | `MACHINE_ID` | 1. `$MACHINE_ID_FILE` (def: `/etc/machine-id`)<br>2. `$DATADIR/machine_id`<br>3. Geração local de UUIDv7 (sem `-`) | `^[0-9a-f]{32}$` (32 caracteres hexadecimais após strip de hífens). | **Sim** (somente quando gerado aleatoriamente). Permissão `0644`. | **100** (`MACHINE_ID_FILE` relativo/com controle/inacessível/não-comum; conteúdo inválido cai p/ próximo nível),<br>**102** (env presente inválida),<br>**113** (falha escrita),<br>**114** (falha geração UUID) |
+| **`AGENT_NAME`** | `AGENT_NAME` | 1. `$DATADIR/agent_name`<br>2. `argv[0]` (nome base do binário sem `.exe`) | `^[a-z0-9._-]+$`, máx. 64 caracteres. **Rejeita `.` e `..`**. | **Não** (fallback `argv[0]` é determinístico). | **103** (todas as fontes vazias / `argv[0]` saneando para vazio/`/`/`.`),<br>**104** (valor não casa com regex/tamanho ou é `.` / `..`) |
 | **`AGENT_UUID`** | `AGENT_UUID` | 1. `$DATADIR/agent_uuid`<br>2. Geração local de UUIDv7 canônico | UUIDv7 canônico RFC 9562 (36 caracteres com hífens, versão 7, variante RFC). | **Sim** (somente quando gerado aleatoriamente). Permissão `0644`. | **105** (falha geração local),<br>**106** (falha escrita `$DATADIR`),<br>**107** (env/valor não é UUIDv7 válido) |
 | **`HOSTNAME`** | `HOSTNAME` | 1. `os.Hostname()` | `^[a-z0-9.-]+$`, máx. 253 chars, rótulos 1-63 chars, sem hífens nas pontas (RFC 1123). | **Não** (não salva em disco). | **108** (`os.Hostname` retornou erro),<br>**109** (inválido pela RFC 1123) |
 | **`WORKSPACE`** | `WORKSPACE` | 1. `$DATADIR/workspace`<br>2. Fallback fixo: `"default"` | `^[a-z0-9.-]+$`, máx. 64 caracteres. **Rejeita `.` e `..`**. | **Não** (fallback `"default"` é determinístico). | **111** (env ou arquivo com valor inválido) |
@@ -97,10 +105,10 @@ Toda fonte textual (seja lida de variável de ambiente ou da primeira linha de u
 ### Gravação Durável e Atômica
 
 As identidades geradas são gravadas via [`persistGenerated`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/resolve.go#L317):
-1. **Criação a Frio (Arquivo Inexistente):** Utiliza [`CreateExclusive`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/system.go#L158). Cria um arquivo temporário via `writeTemp` no mesmo diretório, executa `fchmod(0644)`, `fsync`, fecha e tenta vincular ao destino via `os.Link`. Se outro processo chegou primeiro (`ErrExist`), o perdedor abandona seu valor e adota o conteúdo do arquivo existente através de [`readSettled`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/resolve.go#L290).
+1. **Criação a Frio (Arquivo Inexistente):** Utiliza [`CreateExclusive`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/system.go#L158). Cria um arquivo temporário via `writeTemp` no mesmo diretório, executa `fchmod(0644)`, `fsync`, fecha e tenta vincular ao destino via `os.Link`. Se outro processo chegou primeiro (`ErrExist`), o perdedor aguarda por até 10 s (500 tentativas de 20 ms) e adota o conteúdo do arquivo existente através de [`readSettled`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/resolve.go#L290), evitando falso descarte em volumes NFS.
 2. **Plano B para Filesystems Sem Hard Link:** Em filesystems onde `os.Link` falha (como certas montagens virtuais ou Windows), [`createExclusiveDirect`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/system.go#L183) utiliza um arquivo de trava `.claim` com TTL de 10s e publicação final por `os.Rename`.
 3. **Recuperação de Corrupção (Regeneração):** Se um arquivo existente em `$DATADIR` contiver dados inválidos (ex.: truncamento por crash ou lixo):
-   - A biblioteca emite um aviso obrigatório em `stderr`.
+   - A biblioteca emite um aviso obrigatório em `stderr` reportando tamanho e hash FNV-1a 64-bit (sem vazar conteúdo).
    - A disputa é arbitrada por um arquivo de regeneração `$DATADIR/.<arquivo>.regen`. O processo vencedor gera a nova identidade e publica via [`ReplaceFile`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/system.go#L219) (arquivo temporário + rename atômico).
    - Processos perdedores adotam o valor registrado no `.regen`, garantindo convergência total de nós.
 
@@ -116,18 +124,18 @@ E chama imediatamente `os.Exit(código)`:
 
 | Código | Variável | Motivo do Erro |
 | :---: | :--- | :--- |
-| **100** | `DATADIR` | Diretório não existe (no momento de gravação), não é diretório, caminho é relativo, erro de I/O / permissão, ou link simbólico recusado. |
-| **100** | `MACHINE_ID_FILE` | Caminho explícito informado na env é relativo, inacessível por erro de I/O/permissão, não é arquivo comum (FIFO/dir/device) ou excede 4 KiB. |
+| **100** | `DATADIR` | Diretório não existe (no momento de gravação), não é diretório, caminho é relativo ou contém controle, erro de I/O / permissão, ou link simbólico recusado. |
+| **100** | `MACHINE_ID_FILE` | Caminho explícito informado na env é relativo, contém controle, inacessível por erro de I/O/permissão, não é arquivo comum (FIFO/dir/device) ou excede 4 KiB. |
 | **102** | `MACHINE_ID` | Variável de ambiente presente, porém não corresponde a 32 caracteres hexadecimais (`^[0-9a-f]{32}$`). |
-| **103** | `AGENT_NAME` | Todas as fontes estão vazias (`argv[0]` resultou em string vazia ou barra de diretório raiz). |
-| **104** | `AGENT_NAME` | Valor da env, do arquivo ou de `argv[0]` não atende a `^[a-z0-9._-]+$`, excede 64 caracteres ou é `.` / `..`. |
+| **103** | `AGENT_NAME` | Todas as fontes estão vazias (incluindo `argv[0]` saneado para vazio, `.` ou separador). |
+| **104** | `AGENT_NAME` | Valor da env, do arquivo ou da base de `argv[0]` não atende a `^[a-z0-9._-]+$`, excede 64 caracteres ou é `.` / `..`. |
 | **105** | `AGENT_UUID` | Falha interna na geração local de UUIDv7 para `AGENT_UUID`. |
 | **106** | `AGENT_UUID` | Falha de gravação de `$DATADIR/agent_uuid` no disco (permissão, disco cheio, I/O). |
 | **107** | `AGENT_UUID` | Valor fornecido na env ou gerado não é um UUIDv7 canônico estrito. |
 | **108** | `HOSTNAME` | Variável de ambiente vazia e chamada ao sistema `os.Hostname()` retornou erro. |
 | **109** | `HOSTNAME` | Hostname não cumpre a RFC 1123 (caracteres inválidos, mais de 253 chars, rótulos > 63 chars ou hífens nas extremidades). |
 | **111** | `WORKSPACE` | Valor da env ou do arquivo não atende a `^[a-z0-9.-]+$`, excede 64 caracteres ou é `.` / `..`. |
-| **112** | *(Geral / Init)* | [`Initialize()`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/initialize.go#L34) foi invocado mais de uma vez no mesmo processo. |
+| **112** | *(geral)* | [`Initialize()`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/initialize.go#L34) foi invocado mais de uma vez no mesmo processo (prefixo `geral:`). |
 | **113** | `MACHINE_ID` | Falha de gravação de `$DATADIR/machine_id` no disco. |
 | **114** | `MACHINE_ID` | Falha interna na geração local do UUIDv7 base para o `MACHINE_ID`. |
 
@@ -166,7 +174,7 @@ Qualquer agente que realize alterações neste repositório DEVE seguir impreter
      - Adicione testes unitários no [`resolve_test.go`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/resolve_test.go) com `fakeSystem`.
      - Adicione/atualize testes na suíte de integração em [`tests/api_test.go`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/tests/api_test.go) ou [`tests/exitcodes_test.go`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/tests/exitcodes_test.go).
 6. **Mantenha a Documentação Sincronizada:**
-   - Alterações em comportamentos de campos, códigos de erro ou novas variáveis exigem atualização obrigatória e coerente em [`SPEC.md`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/SPEC.md), [`README.md`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/README.md), [`docs/DEPLOY-FULL.md`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/docs/DEPLOY-FULL.md) e neste [`AGENTS.md`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/AGENTS.md).
+   - Alterações em comportamentos de campos, códigos de erro ou novas variáveis exigem atualização obrigatória e coerente nas especificações modulares em [`docs/`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/docs), na skill em [`skill/`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/skill), em [`SPEC.md`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/SPEC.md), em [`README.md`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/README.md) e neste [`AGENTS.md`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/AGENTS.md).
 
 ---
 
@@ -201,7 +209,7 @@ go vet ./...
 
 ```bash
 # Executar o exemplo mínimo com variáveis explícitas (sem tocar disco)
-cd examples/minimal
+cd skill/examples/minimal
 MACHINE_ID=abcdef0123456789abcdef0123456789 \
 AGENT_NAME=meu-agente \
 AGENT_UUID=018f3a5b-7c8d-7e9f-8a1b-2c3d4e5f6a7b \

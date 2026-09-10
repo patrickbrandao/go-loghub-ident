@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// Testes de regressão dos defeitos catalogados em tasks/REPORT-02.md.
+// Testes de regressão permanentes de persistência durável e concorrência (BUG-17 a BUG-20).
 
 // ----- BUG-17: arquivos de identidade gravados sem fsync -----
 

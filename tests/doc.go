@@ -22,8 +22,7 @@
 // # Testes de bug
 //
 // Os arquivos bugs_test.go e bugs2_test.go guardam os testes de regressão dos
-// defeitos catalogados em tasks/REPORT-01.md, REPORT-02.md e REPORT-03.md, um
-// TestFix_BUGxx por defeito corrigido.
+// defeitos históricos corrigidos na biblioteca, um TestFix_BUGxx por defeito.
 //
 // Eles nasceram como pares TestChar_/TestFix_: o TestChar_ afirmava o
 // comportamento defeituoso — passava enquanto o bug existisse e falhava com

@@ -33,7 +33,7 @@ var initialized atomic.Bool
 // stderr uma linha por campo indicando a origem e o valor final resolvido.
 func Initialize() {
 	if !initialized.CompareAndSwap(false, true) {
-		fmt.Fprintln(os.Stderr, "lib-loghub-ident: init: Initialize() chamado mais de uma vez")
+		fmt.Fprintln(os.Stderr, "lib-loghub-ident: geral: Initialize() chamado mais de uma vez")
 		os.Exit(112)
 	}
 

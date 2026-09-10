@@ -2,7 +2,9 @@
 
 > Biblioteca Go que resolve e expõe a identidade de um software dentro do
 > ecossistema Loghub. Documento de especificação consolidado após a entrevista
-> de design. Esta é a fonte de verdade da implementação.
+> de design.
+> 
+> **Aviso de Arquitetura Documental:** As especificações canônicas, exaustivas e divididas por responsabilidades técnicas (suficientes para refatorar o projeto do zero) estão modularizadas em [`docs/00-INDEX.md`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/docs/00-INDEX.md). Para guias de uso, receitas Docker/K8s e integração em outros projetos, consulte a skill em [`skill/SKILL.md`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/skill/SKILL.md).
 
 ## 1. Identidade do módulo
 
@@ -27,6 +29,7 @@ valores **não é exportada** — não há acesso a campos públicos.
 
 ```go
 func Initialize()        // resolve a identidade; encerra o processo em falha
+func IsInitialized() bool // true após Initialize() bem-sucedido
 
 func DataDir()   string
 func MachineID() string
@@ -64,6 +67,7 @@ type system interface {        // abstração de I/O, injetável em testes
     Getenv(key string) string
     Stat(path string) (os.FileInfo, error)
     ReadFile(path string) ([]byte, error)                 // limitada a 4 KiB, só arquivo comum
+    ReadFileNoFollow(path string) ([]byte, error)         // limitada a 4 KiB, só arquivo comum, recusa symlinks
     CreateExclusive(path string, data []byte, perm os.FileMode) (bool, error)
     ReplaceFile(path string, data []byte, perm os.FileMode) error
     Remove(path string) error
@@ -93,7 +97,9 @@ permissão aplicada explicitamente (`fchmod`), sem interferência do umask:
   chegou antes — é o filesystem quem arbitra a corrida entre processos irmãos
   que sobem ao mesmo tempo sobre o mesmo `$DATADIR`. Quem perde a corrida
   **relê o arquivo e adota o valor do vencedor**, de modo que todos convergem
-  para uma identidade única. Em sistemas de arquivos sem suporte a hard links
+  para uma identidade única. O processo perdedor aguarda a estabilização do arquivo
+  por até 10 s (500 tentativas de 20 ms), prevenindo declarações falsas de corrupção
+  em volumes de rede com latência de atributos (NFS). Em sistemas de arquivos sem suporte a hard links
   (Plano B), a exclusão mútua utiliza um arquivo de trava `.claim` com TTL
   (10 s), verificação de timestamp e publicação final atômica via `os.Rename`,
   garantindo que leitores concorrentes nunca observem um arquivo vazio de 0 bytes.
@@ -181,8 +187,10 @@ de componentes de caminho relativos e a estrutura de rótulos da RFC 1123.
 ## 6. DATADIR
 
 - Env: `DATADIR`. Padrão: `/data`.
-- **Caminho absoluto obrigatório.** O valor é normalizado com `filepath.Clean` e
-  precisa ser absoluto; um caminho relativo aborta com **código 100**. Um
+- **Caminho absoluto obrigatório e livre de caracteres de controle.** O valor é
+  normalizado com `filepath.Clean`, precisa ser absoluto e não pode conter
+  caracteres de controle Unicode ou bytes `< 0x20` / `0x7f` (ex.: `\n`, `\r`, `NUL`);
+  caminho relativo ou com controle aborta com **código 100**. Um
   `DATADIR=dados` faria a identidade depender do diretório de trabalho: o mesmo
   serviço iniciado de outro lugar (um `WorkingDirectory` diferente no unit do
   systemd, um `chdir` da aplicação) leria outro arquivo e viraria outro agente.
@@ -210,7 +218,8 @@ de componentes de caminho relativos e a estrutura de rótulos da RFC 1123.
 - Erro de **I/O real** ao ler um arquivo dentro de um `$DATADIR` que existe
   (ex.: permissão negada, disco com falha) também aborta com **código 100** —
   não é mascarado como fonte vazia. Links simbólicos dentro de `$DATADIR` são
-  recusados por segurança sem seguir o destino.
+  recusados por segurança (`ReadFileNoFollow`) e abortam com **código 100**,
+  evitando exfiltração de segredos ou operações sobre arquivos impróprios.
 
 ## 7. MACHINE_ID
 
@@ -220,8 +229,8 @@ Cadeia de resolução:
 1. Env `MACHINE_ID` — se presente e **inválida** → aborta **102**.
 2. Arquivo `$MACHINE_ID_FILE` (env; padrão `/etc/machine-id`). Conteúdo inválido
    neste nível → **cai** (não aborta). Tratamento de erro:
-   - Se a env contiver um caminho **relativo**, aborta com **código 100** e a variável
-     `MACHINE_ID_FILE`.
+    - Se a env contiver um caminho **relativo** ou contendo **caracteres de controle**,
+      aborta com **código 100** e a variável `MACHINE_ID_FILE`.
    - Se a env apontar para arquivo **inexistente**, troca para `/etc/machine-id`.
      "Inexistente" é `fs.ErrNotExist` e nada mais.
    - Se a env apontar para um caminho **inacessível** (permissão negada, erro de
@@ -390,12 +399,12 @@ A linha de erro é a **última** que a biblioteca escreve. Avisos operacionais
 
 ## 14. Entregáveis
 
-- `system.go` — interface `system` e implementação `osSystem`.
-- `identity.go` — struct interna, getters, regexes, constantes.
+- `system.go`, `system_unix.go`, `system_windows.go` — interface `system`, implementação `osSystem` e abertura imune a FIFO TOCTOU.
+- `identity.go` — struct interna, getters, validadores manuais por bytes (sem `regexp`), constantes.
 - `resolve.go` — lógica de resolução pura (`resolve`).
 - `initialize.go` — `Initialize`, guarda de chamada única, stderr/exit, debug.
 - `doc.go` — documentação de pacote.
 - `*_test.go` — testes unitários (precedência, regex, códigos de saída) via
   `fakeSystem`.
 - `README.md` — documentação em PT-BR.
-- `examples/minimal/` — exemplo executável mínimo.
+- `skill/examples/minimal/` — exemplo executável mínimo.

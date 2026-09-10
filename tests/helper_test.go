@@ -32,7 +32,17 @@ func TestMain(m *testing.M) {
 // processo com o código da falha; se voltar, imprimimos os seis campos em
 // formato "CHAVE=valor", uma linha por campo.
 func runHelper() {
+	if lhident.IsInitialized() {
+		fmt.Println("ERRO=IsInitialized retornou true antes de Initialize")
+		os.Exit(99)
+	}
+
 	lhident.Initialize()
+
+	if !lhident.IsInitialized() {
+		fmt.Println("ERRO=IsInitialized retornou false apos Initialize")
+		os.Exit(99)
+	}
 
 	fmt.Printf("DATADIR=%s\n", lhident.DataDir())
 	fmt.Printf("MACHINE_ID=%s\n", lhident.MachineID())

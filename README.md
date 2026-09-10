@@ -14,7 +14,7 @@ arquivos e fallbacks do sistema. Projetada para microserviços em containers.
   [`go-loghub-uuid`](https://github.com/patrickbrandao/go-loghub-uuid), sem
   dependência de `/proc`.
 
-> A especificação completa de design está em [SPEC.md](SPEC.md).
+> A especificação técnica completa está modularizada em [docs/00-INDEX.md](docs/00-INDEX.md) (com sumário em [SPEC.md](SPEC.md)). Para um guia prático de integração e receitas para novos serviços, consulte a [skill/](skill/SKILL.md).
 
 ## Instalação
 
@@ -33,7 +33,7 @@ module ident-test
 
 go 1.22
 
-require github.com/patrickbrandao/go-loghub-ident v0.3.1
+require github.com/patrickbrandao/go-loghub-ident v0.4.0
 ```
 
 Arquivo: main.go
@@ -224,10 +224,10 @@ chama `os.Exit(<código>)`.
 
 | Código | Variável     | Motivo                                                 |
 |--------|--------------|--------------------------------------------------------|
-| 100    | `DATADIR`    | diretório necessário ausente, não é diretório, caminho relativo, erro de I/O, ou symlink recusado |
-| 100    | `MACHINE_ID_FILE` | caminho informado está inacessível, relativo, ou não é arquivo comum utilizável (diretório, fifo, device, > 4 KiB) |
+| 100    | `DATADIR`    | diretório necessário ausente, não é diretório, caminho relativo ou com controle, erro de I/O, ou symlink recusado |
+| 100    | `MACHINE_ID_FILE` | caminho informado está inacessível, relativo ou com controle, ou não é arquivo comum utilizável (diretório, fifo, device, > 4 KiB) |
 | 102    | `MACHINE_ID` | env não casa com `^[0-9a-f]{32}$`                       |
-| 103    | `AGENT_NAME` | todas as fontes vazias (`argv[0]` ficou vazio)        |
+| 103    | `AGENT_NAME` | todas as fontes vazias (`argv[0]` saneou para vazio/./separador) |
 | 104    | `AGENT_NAME` | valor não casa com `^[a-z0-9._-]+$`                     |
 | 105    | `AGENT_UUID` | falha na geração local de UUIDv7                      |
 | 106    | `AGENT_UUID` | gravação em `$DATADIR/agent_uuid` falhou              |
@@ -249,7 +249,7 @@ linhas de diagnóstico podem precedê-la.
 
 ## Exemplo
 
-Veja [`examples/minimal`](examples/minimal) para um programa executável.
+Veja [`skill/examples/minimal`](skill/examples/minimal) para um programa executável.
 
 ## Licença
 

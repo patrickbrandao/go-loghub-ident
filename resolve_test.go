@@ -627,6 +627,16 @@ func TestResolve_DebugLines_ReportOrigins(t *testing.T) {
 // ----- Getters / apply -----
 
 func TestApplyAndGetters(t *testing.T) {
+	snapshot := identity{
+		dataDir:   DataDir(),
+		machineID: MachineID(),
+		agentName: AgentName(),
+		agentUUID: AgentUUID(),
+		hostname:  Hostname(),
+		workspace: Workspace(),
+	}
+	t.Cleanup(func() { apply(&snapshot) })
+
 	apply(&identity{
 		dataDir:   "/data",
 		machineID: "abcdef0123456789abcdef0123456789",
@@ -642,8 +652,11 @@ func TestApplyAndGetters(t *testing.T) {
 }
 
 func TestIsInitialized(t *testing.T) {
-	// IsInitialized expõe o estado de initialized
-	_ = IsInitialized()
+	// IsInitialized expõe o estado de initialized. Na suíte unitária antes de
+	// Initialize(), deve ser false.
+	if IsInitialized() {
+		t.Errorf("IsInitialized() = true antes de Initialize() ter sido executado")
+	}
 }
 
 // ----- BUG-18: falha na geração do MACHINE_ID tem código próprio (114) -----
@@ -1117,13 +1130,18 @@ func TestResolve_SymlinkInDataDirIsRefusedAndNeverEchoed(t *testing.T) {
 	sys.symlinks["/data/agent_uuid"] = "/etc/secret.token"
 
 	id, f := resolve(sys)
-	if f != nil {
-		t.Fatalf("falha inesperada: %+v", f)
+	if f == nil {
+		t.Fatalf("esperava falha com código 100 ao encontrar symlink em $DATADIR")
 	}
-	// O symlink deve ter sido recusado (ReadDataPath / ReadFileNoFollow)
-	// gerando um novo UUID e NUNCA contendo o segredo nem nos warnings nem no debug.
-	if id.agentUUID == secret {
-		t.Errorf("agentUUID adotou o segredo do symlink!")
+	if f.code != 100 || f.variable != "DATADIR" {
+		t.Errorf("f = %+v (esperava code=100 variable=DATADIR)", f)
+	}
+	if !strings.Contains(f.reason, "link simbólico") {
+		t.Errorf("motivo não cita link simbólico: %s", f.reason)
+	}
+	// O segredo apontado pelo symlink NUNCA deve vazar na razão de falha, nos warnings nem no debug.
+	if strings.Contains(f.reason, secret) {
+		t.Errorf("motivo da falha vazou o segredo: %s", f.reason)
 	}
 	for _, w := range id.warnings {
 		if strings.Contains(w, secret) {
@@ -1239,5 +1257,60 @@ func TestResolve_RegenRecord_RestoresAndWarnsRestored(t *testing.T) {
 	}
 	if !foundRestoreWarn {
 		t.Errorf("esperava aviso com 'foi RESTAURADO a partir do registro de regeneração', obtive warnings: %v", id.warnings)
+	}
+}
+
+// ----- Testes adicionais de robustez e novas regras -----
+
+func TestFNV1a64_VectorsAndDescribeInvalid(t *testing.T) {
+	// Vetores conhecidos para FNV-1a 64 bits:
+	// ""  => 0xcbf29ce484222325
+	// "a" => 0xaf63dc4c8601ec8c
+	if got := fnv1a64(""); got != 0xcbf29ce484222325 {
+		t.Errorf(`fnv1a64("") = 0x%016x, esperava 0xcbf29ce484222325`, got)
+	}
+	if got := fnv1a64("a"); got != 0xaf63dc4c8601ec8c {
+		t.Errorf(`fnv1a64("a") = 0x%016x, esperava 0xaf63dc4c8601ec8c`, got)
+	}
+
+	// describeInvalid deve produzir "<N> bytes, hash <16-hex>" e NUNCA conter caracteres de v
+	v := "senha-super-secreta\x00\xff"
+	desc := describeInvalid(v)
+	expectedPrefix := fmt.Sprintf("%d bytes, hash ", len(v))
+	if !strings.HasPrefix(desc, expectedPrefix) {
+		t.Errorf("describeInvalid(%q) = %q, esperava prefixo %q", v, desc, expectedPrefix)
+	}
+	if strings.Contains(desc, "senha") {
+		t.Errorf("describeInvalid vazou texto de entrada: %s", desc)
+	}
+}
+
+func TestResolve_DataDirWithControlChars(t *testing.T) {
+	for _, bad := range []string{"/data\nevil", "/data\revil", "/data\x00evil", "/data\x1fevil"} {
+		sys := newFakeSystem()
+		sys.env["DATADIR"] = bad
+		id, f := resolve(sys)
+		_ = id
+		if f == nil || f.code != 100 || f.variable != "DATADIR" {
+			t.Errorf("DATADIR=%q: esperava falha com código 100 DATADIR, obtive %+v", bad, f)
+		}
+		if !strings.Contains(f.reason, "caractere de controle") {
+			t.Errorf("DATADIR=%q: motivo deveria citar caractere de controle, obtive %q", bad, f.reason)
+		}
+	}
+}
+
+func TestResolve_MachineIDFileWithControlChars(t *testing.T) {
+	for _, bad := range []string{"/etc/mid\npath", "/etc/mid\x00path"} {
+		sys := newFakeSystem().withDataDir()
+		sys.env["MACHINE_ID_FILE"] = bad
+		id, f := resolve(sys)
+		_ = id
+		if f == nil || f.code != 100 || f.variable != "MACHINE_ID_FILE" {
+			t.Errorf("MACHINE_ID_FILE=%q: esperava falha com código 100 MACHINE_ID_FILE, obtive %+v", bad, f)
+		}
+		if !strings.Contains(f.reason, "caractere de controle") {
+			t.Errorf("MACHINE_ID_FILE=%q: motivo deveria citar caractere de controle, obtive %q", bad, f.reason)
+		}
 	}
 }

@@ -11,8 +11,9 @@ import (
 	"time"
 )
 
-// Testes de regressão dos defeitos catalogados em tasks/REPORT-01.md e
-// tasks/REPORT-03.md.
+// Testes de regressão permanentes (BUG-01 a BUG-16).
+//
+// Cada teste imortaliza um defeito com comentários explicativos autocontidos.
 //
 // Cada teste nasceu como um par TestChar_/TestFix_: o TestChar_ afirmava o
 // comportamento defeituoso e o TestFix_ o comportamento esperado após a

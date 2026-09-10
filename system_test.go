@@ -74,15 +74,73 @@ func TestOSSystem_ReadFile(t *testing.T) {
 	})
 }
 
-// ----- CreateExclusive e o seu plano B (BUG-04, BUG-05, BUG-17) -----
+// ----- ReadFileNoFollow (001-EXFILTRACAO-VIA-SYMLINK-EM-DATADIR) -----
+
+func TestOSSystem_ReadFileNoFollow(t *testing.T) {
+	dir := t.TempDir()
+	sys := osSystem{}
+
+	t.Run("arquivo comum é lido normalmente", func(t *testing.T) {
+		path := filepath.Join(dir, "comum")
+		if err := os.WriteFile(path, []byte("secreto-proprio\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		data, err := sys.ReadFileNoFollow(path)
+		if err != nil {
+			t.Fatalf("erro inesperado: %v", err)
+		}
+		if string(data) != "secreto-proprio\n" {
+			t.Errorf("conteúdo = %q", data)
+		}
+	})
+
+	t.Run("symlink para arquivo comum é recusado por ReadFileNoFollow mas aceito por ReadFile", func(t *testing.T) {
+		target := filepath.Join(dir, "alvo")
+		if err := os.WriteFile(target, []byte("alvo-externo\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		link := filepath.Join(dir, "link-alvo")
+		if err := os.Symlink(target, link); err != nil {
+			t.Fatal(err)
+		}
+
+		// ReadFile (fontes do sistema) deve seguir o symlink
+		dataFollow, err := sys.ReadFile(link)
+		if err != nil {
+			t.Fatalf("ReadFile falhou ao seguir symlink: %v", err)
+		}
+		if string(dataFollow) != "alvo-externo\n" {
+			t.Errorf("ReadFile = %q (esperava alvo-externo\\n)", dataFollow)
+		}
+
+		// ReadFileNoFollow (arquivos de $DATADIR) DEVE recusar o symlink
+		_, err = sys.ReadFileNoFollow(link)
+		if err == nil {
+			t.Fatal("ReadFileNoFollow aceitou symlink inesperadamente")
+		}
+		if !errors.Is(err, errInvalidSource) {
+			t.Fatalf("err = %v (esperava errInvalidSource)", err)
+		}
+		if !strings.Contains(err.Error(), "link simbólico") {
+			t.Errorf("mensagem de erro = %q (esperava conter 'link simbólico')", err.Error())
+		}
+	})
+}
+
+// ----- CreateExclusive e o seu plano B (BUG-04, BUG-05, BUG-17, 003-PLANO-B) -----
 
 // createExclusive reúne as duas implementações para que ambas passem pela mesma
-// bateria. O plano B (createExclusiveDirect) só roda em produção quando o
-// filesystem não suporta hard link — condição que não dá para provocar no disco
-// local, e por isso ele é chamado aqui diretamente.
+// bateria. O plano B roda quando linkFile falha (simulando filesystem sem hard link).
 var createExclusive = map[string]func(string, []byte, os.FileMode) (bool, error){
-	"link":   osSystem{}.CreateExclusive,
-	"direct": createExclusiveDirect,
+	"link": osSystem{}.CreateExclusive,
+	"direct": func(path string, data []byte, perm os.FileMode) (bool, error) {
+		oldLink := linkFile
+		defer func() { linkFile = oldLink }()
+		linkFile = func(oldname, newname string) error {
+			return errors.New("operation not supported (fake ENOSYS)")
+		}
+		return osSystem{}.CreateExclusive(path, data, perm)
+	},
 }
 
 func TestCreateExclusive(t *testing.T) {

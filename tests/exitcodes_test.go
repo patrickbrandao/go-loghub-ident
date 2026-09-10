@@ -10,9 +10,10 @@ import (
 )
 
 // Esta suíte percorre a tabela de códigos de saída da SPEC §13 executando o
-// binário de verdade. Três códigos não são alcançáveis por fora — 105 (falha na
-// geração de UUID) e 108 (erro de os.Hostname) só ocorrem com o system injetado,
-// e ambos já estão cobertos pelos testes unitários da raiz (resolve_test.go).
+// binário de verdade. Três códigos não são alcançáveis por fora — 105 e 114
+// (falha na geração de UUID para AGENT_UUID e MACHINE_ID) e 108 (erro de
+// os.Hostname) só ocorrem com o system injetado, e os três já estão cobertos
+// pelos testes unitários da raiz (resolve_test.go).
 
 // checkFailure valida o código de saída e o formato da mensagem da SPEC §13:
 //

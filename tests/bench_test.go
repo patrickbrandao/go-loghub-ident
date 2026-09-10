@@ -84,10 +84,11 @@ func BenchmarkGetter_Parallel(b *testing.B) {
 
 // ----- PERF-01: custo do pacote regexp na validação -----
 //
-// As regexes da biblioteca são compiladas na carga do pacote e usadas poucas
-// vezes por boot. O que estes benchmarks quantificam é o preço de manter a
-// dependência: o custo fixo de compilação, pago por todo binário que importa a
-// biblioteca mesmo que nunca chame Initialize(), e o custo por validação.
+// A biblioteca já não compila regexes (identity.go usa validadores manuais;
+// ver TestFix_PERF01_NoRegexpDependency). Estes benchmarks preservam a medida
+// do preço que a dependência custava — compilação na carga do pacote, paga por
+// todo binário importador mesmo sem chamar Initialize(), e custo por validação —
+// para que a comparação com os validadores manuais continue reproduzível.
 
 var (
 	reBenchMachineID = regexp.MustCompile(`^[0-9a-f]{32}$`)

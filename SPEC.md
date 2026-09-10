@@ -51,6 +51,9 @@ centenas de threads chamando milhares de vezes por milissegundo.
   relação *happens-before* que torna a leitura sem sincronização segura.
 - **Imutável após Initialize.** Os valores são escritos uma única vez, durante
   `Initialize()`, e nunca mais modificados.
+- **Antes de Initialize.** Os getters devolvem `""` (zero value). O valor é
+  indefinido e não deve ser usado; use `IsInitialized()` para validar o contrato
+  em runtime.
 
 ## 4. Arquitetura interna (testabilidade)
 
@@ -90,7 +93,10 @@ permissão aplicada explicitamente (`fchmod`), sem interferência do umask:
   chegou antes — é o filesystem quem arbitra a corrida entre processos irmãos
   que sobem ao mesmo tempo sobre o mesmo `$DATADIR`. Quem perde a corrida
   **relê o arquivo e adota o valor do vencedor**, de modo que todos convergem
-  para uma identidade única.
+  para uma identidade única. Em sistemas de arquivos sem suporte a hard links
+  (Plano B), a exclusão mútua utiliza um arquivo de trava `.claim` com TTL
+  (10 s), verificação de timestamp e publicação final atômica via `os.Rename`,
+  garantindo que leitores concorrentes nunca observem um arquivo vazio de 0 bytes.
 - `ReplaceFile` substitui o conteúdo de forma **atômica** (arquivo temporário
   + `rename`). Usada apenas na regeneração de um arquivo corrompido. Nunca
   expõe conteúdo parcial nem deixa arquivo truncado se o processo morrer no
@@ -110,18 +116,28 @@ A disputa é resolvida num **registro de regeneração** à parte,
 `$DATADIR/.<arquivo>.regen`, criado com `CreateExclusive`: o primeiro processo
 a criá-lo vence, e é o valor dele que **todos** gravam no arquivo de identidade
 — a mesma gravação, byte a byte, em todos os processos, e portanto idempotente
-em qualquer ordem.
+em qualquer ordem. O processo vencedor emite o aviso de que a identidade foi
+regerada; processos que perdem a corrida leem o registro `.regen`, adotam o
+valor vencedor e emitem aviso específico indicando restauração a partir do
+registro prévio.
 
 O registro **não é apagado** ao final: apagá-lo devolveria o nome à disputa e
 permitiria que um processo atrasado vencesse uma segunda vez, com outro valor.
 Ele é removido apenas quando uma identidade é criada **do zero** (arquivo
 ausente), momento em que um registro anterior está obsoleto.
 
-**Leitura.** `ReadFile` recusa o que não é arquivo comum (FIFO, device,
-diretório) e o que passa de **4 KiB**, devolvendo "fonte inválida" — tratada
-como fonte ausente pela cadeia. Sem esse limite, um `MACHINE_ID_FILE` apontado
-por engano para `/dev/zero` consome toda a memória do nó, e um FIFO sem
-escritor pendura o boot para sempre.
+**Leitura e segurança.** `ReadFile` recusa o que não é arquivo comum (FIFO, device,
+diretório) e o que passa de **4 KiB**, devolvendo "fonte inválida". No caso de
+arquivos dentro de `$DATADIR`, a leitura utiliza `ReadFileNoFollow`, que recusa
+links simbólicos com erro de fonte inválida, evitando que arquivos externos ao
+volume sejam exfiltrados. Sem esses limites, um `MACHINE_ID_FILE` apontado
+por engano para `/dev/zero` consumiria toda a memória do nó, e um FIFO sem
+escritor penduraria o boot para sempre.
+
+**Isolamento de volume.** A convergência de identidade assume processos rodando no
+mesmo nó (mesmo pod / host). Réplicas ou containers independentes NUNCA devem
+compartilhar o mesmo volume gravável `$DATADIR`, sob pena de colidirem
+`machine_id` e `agent_uuid`.
 
 ## 5. Pipeline de resolução por campo
 
@@ -141,6 +157,9 @@ arquivo — as duas fontes do mesmo campo não podem ter saneamentos diferentes.
     espaços, reprovaria na validação e faria a biblioteca **descartar a
     identidade persistida**. Um BOM, que editores do Windows escrevem por
     padrão, derrubaria o processo.
+  - Avisos e erros operacionais nunca exibem dados brutos ou lixo arbitrário lido
+    do disco em texto claro, registrando apenas tamanho e identificador sanitizado,
+    evitando vazamento de segredos em logs operacionais.
 - **Ausência vs. invalidez:**
   - Fonte **ausente ou vazia** após trim → cai para a próxima fonte.
   - Fonte de env **presente mas inválida** → **aborta** com o código do campo.
@@ -179,17 +198,19 @@ de componentes de caminho relativos e a estrutura de rótulos da RFC 1123.
   caminho feliz (todas as envs presentes), `$DATADIR` nunca é tocado e sua
   ausência **não** é fatal — suporta filesystem read-only.
 - A biblioteca **não cria** o diretório; o orquestrador deve montar o volume.
-- **Leitura:** um `$DATADIR` inexistente é "fonte ausente" — o campo segue para
+- **Leitura:** um `$DATADIR` inexistente (`fs.ErrNotExist`) é "fonte ausente" — o campo segue para
   o próximo nível da cadeia. É o que torna alcançáveis os fallbacks que as §7 e
   §11 declaram infalíveis; se a leitura abortasse, o nível seguinte nunca
   rodaria e a justificativa para remover os códigos 101 e 110 não se
-  sustentaria.
+  sustentaria. Qualquer outro erro de `Stat` (como `EACCES` / permissão negada)
+  ou a detecção de que `$DATADIR` não é diretório aborta imediatamente com
+  **código 100**, inclusive na leitura.
 - **Gravação:** um `$DATADIR` inexistente ou que não é diretório aborta com
   **código 100**. Gerar identidade sem onde persistí-la é falha legítima.
 - Erro de **I/O real** ao ler um arquivo dentro de um `$DATADIR` que existe
   (ex.: permissão negada, disco com falha) também aborta com **código 100** —
-  não é mascarado como fonte vazia. Apenas "arquivo ausente" e "fonte inválida"
-  (não é arquivo comum, ou excede 4 KiB) caem para a próxima fonte.
+  não é mascarado como fonte vazia. Links simbólicos dentro de `$DATADIR` são
+  recusados por segurança sem seguir o destino.
 
 ## 7. MACHINE_ID
 
@@ -199,21 +220,30 @@ Cadeia de resolução:
 1. Env `MACHINE_ID` — se presente e **inválida** → aborta **102**.
 2. Arquivo `$MACHINE_ID_FILE` (env; padrão `/etc/machine-id`). Conteúdo inválido
    neste nível → **cai** (não aborta). Tratamento de erro:
+   - Se a env contiver um caminho **relativo**, aborta com **código 100** e a variável
+     `MACHINE_ID_FILE`.
    - Se a env apontar para arquivo **inexistente**, troca para `/etc/machine-id`.
      "Inexistente" é `fs.ErrNotExist` e nada mais.
    - Se a env apontar para um caminho **inacessível** (permissão negada, erro de
-     I/O), aborta com **código 100** e a variável `MACHINE_ID_FILE`. O operador deu uma instrução explícita que
-     não pôde ser cumprida; entregar outra identidade em silêncio esconde o erro.
-   - O `/etc/machine-id` **padrão** (env ausente) continua best-effort: ilegível
-     ou inexistente, apenas cai para o próximo nível.
+     I/O) OU **inutilizável** (diretório, FIFO, dispositivo, ou maior que 4 KiB),
+     aborta com **código 100** e a variável `MACHINE_ID_FILE`. O operador deu uma
+     instrução explícita que não pôde ser cumprida; entregar outra identidade em
+     silêncio esconde o erro.
+   - O `/etc/machine-id` **padrão** (env ausente) continua best-effort: ilegível,
+     inexistente, inválido ou inutilizável, apenas cai para o próximo nível.
 3. Arquivo `$DATADIR/machine_id` (auto-gerido). Vazio/inválido → cai, com
    **aviso obrigatório em stderr** (ver §12).
 4. **Gerar:** UUIDv7 (`Level1`) com hífens removidos → 32 hex; gravar em
    `$DATADIR/machine_id` (perm 0644, garantida, durável e atômica — ver §4).
    - Falha de **geração** → **código 114**.
+   - Valor gerado que reprova na validação (só com dependência corrompida) →
+     **código 114**.
    - Falha de **gravação** → **código 113**.
    - Se outro processo criou o arquivo entre a leitura e a gravação, o valor
      dele é adotado.
+   - A persistência é **por campo, sem atomicidade entre campos**: um boot que
+     gere `machine_id` e aborte depois (p.ex. 104 em `AGENT_NAME`) deixa o arquivo
+     gerado para o próximo boot. Isso é válido e esperado; não apagar.
 
 > O código **101** do rascunho foi **removido**: como a cadeia sempre termina em
 > geração, machine-id nunca é fatal por arquivo ausente.
@@ -310,11 +340,16 @@ Cadeia:
   lib-loghub-ident: aviso: <mensagem>
   ```
 
-  Hoje há um único caso: o **descarte de uma identidade persistida**
-  (`$DATADIR/machine_id` ou `$DATADIR/agent_uuid` com conteúdo inválido, que a
-  §5 manda regenerar). É o pior modo de falha possível para uma biblioteca de
-  identidade — um agente volta com outro `machine_id` depois de um crash e
-  aparece no servidor como uma máquina nova — e não pode acontecer em silêncio.
+  Casos de emissão:
+  1. **Descarte e regeneração de identidade persistida:** quando um
+     `$DATADIR/machine_id` ou `$DATADIR/agent_uuid` tem conteúdo inválido e a
+     biblioteca assume a liderança para regenerar o valor.
+  2. **Adoção de regeneração prévia:** quando uma réplica irmã descobre que a
+     identidade corrompida já foi regerada por outro processo concorrente
+     (arbitrado pelo registro `.regen`) e adota essa regeneração.
+
+  Avisos de descarte protegem segredos potencialmente contidos no arquivo lido,
+  reportando apenas tamanho e hash sanitizado em vez do conteúdo em claro.
 
 ## 13. Saída de erro
 
@@ -328,8 +363,8 @@ e chama `os.Exit(<código>)`.
 
 | Código | Variável     | Motivo                                                              |
 |--------|--------------|--------------------------------------------------------------------|
-| 100    | `DATADIR`    | diretório não existe / não é diretório / caminho relativo, ou erro de I/O ao ler arquivo |
-| 100    | `MACHINE_ID_FILE` | caminho informado pelo operador está inacessível (não é "inexistente") |
+| 100    | `DATADIR`    | diretório necessário ausente, não é diretório, caminho relativo, erro de I/O / permissão, ou link simbólico recusado |
+| 100    | `MACHINE_ID_FILE` | caminho informado é relativo, inacessível, ou não é arquivo comum utilizável (diretório, fifo, device, > 4 KiB) |
 | 102    | `MACHINE_ID` | env presente não casa com `^[0-9a-f]{32}$`                          |
 | 103    | `AGENT_NAME` | todas as fontes vazias (`argv[0]` saneado ficou vazio)             |
 | 104    | `AGENT_NAME` | valor não casa com `^[a-z0-9._-]+$`                                 |

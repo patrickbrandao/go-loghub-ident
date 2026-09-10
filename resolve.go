@@ -7,7 +7,9 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"time"
 	"unicode"
 )
 
@@ -28,9 +30,9 @@ func newFailure(code int, variable, reason string) *failure {
 type resolver struct {
 	sys system
 
-	dataDir string // caminho do DATADIR (resolvido cedo; existência validada lazy)
-	dirOK   bool   // true após o DATADIR ter sido validado com sucesso
-	dirBad  bool   // true após o DATADIR ter sido reprovado (evita re-Stat)
+	dataDir    string // caminho do DATADIR (resolvido cedo; existência validada lazy)
+	dirChecked bool   // true após o primeiro Stat do DATADIR (evita re-Stat)
+	dirErr     error  // nil = utilizável; fs.ErrNotExist = ausente; errNotDir = não é diretório; outro = erro real
 
 	debug    []string // uma linha por campo, emitida apenas em modo debug
 	warnings []string // eventos operacionais, emitidos SEMPRE
@@ -129,15 +131,44 @@ func isSpaceOrControl(r rune) bool {
 	return unicode.IsSpace(r) || unicode.IsControl(r)
 }
 
-// readFile lê um arquivo arbitrário e devolve sua primeira linha (saneada).
-//
-// Fonte ausente devolve ("", nil): a cadeia segue para o próximo nível. Uma
-// fonte que existe mas não pode conter identidade (FIFO, device, arquivo
-// grande demais) recebe o mesmo tratamento — é inutilizável, não é uma falha
-// do operador. Só um erro de I/O legítimo (permissão negada, disco com falha)
-// é propagado.
+// describeInvalid descreve um valor reprovado SEM reproduzi-lo. O conteúdo de
+// um arquivo em $DATADIR pode ter sido plantado por outro inquilino do volume
+// (um symlink para um segredo, por exemplo); ecoá-lo em stderr entregaria o
+// arquivo ao coletor de logs. Comprimento e o primeiro caractere fora do
+// alfabeto mais permissivo dos campos bastam para o operador diagnosticar.
+func describeInvalid(v string) string {
+	for i, c := range v {
+		if c > unicode.MaxASCII || !(isAlnumLower(byte(c)) || c == '.' || c == '_' || c == '-') {
+			return fmt.Sprintf("%d byte(s); caractere %q inaceitável na posição %d", len(v), c, i)
+		}
+	}
+	return fmt.Sprintf("%d byte(s); caracteres aceitáveis, mas comprimento ou estrutura inválidos", len(v))
+}
+
+// maxEchoLen limita o que uma mensagem reproduz de um valor de ENV — que é do
+// operador, mas pode ser enorme ou ter sido colado por engano.
+const maxEchoLen = 64
+
+func preview(v string) string {
+	if len(v) <= maxEchoLen {
+		return fmt.Sprintf("%q", v)
+	}
+	return fmt.Sprintf("%q… (%d bytes)", v[:maxEchoLen], len(v))
+}
+
+// readFile lê um arquivo do SISTEMA (fora de $DATADIR) e devolve sua primeira
+// linha (saneada). readDataPath faz o mesmo para um caminho DENTRO de $DATADIR,
+// sem seguir links simbólicos.
 func (r *resolver) readFile(path string) (string, error) {
-	data, err := r.sys.ReadFile(path)
+	return r.readWith(r.sys.ReadFile, path)
+}
+
+func (r *resolver) readDataPath(path string) (string, error) {
+	return r.readWith(r.sys.ReadFileNoFollow, path)
+}
+
+func (r *resolver) readWith(read func(string) ([]byte, error), path string) (string, error) {
+	data, err := read(path)
 	if err != nil {
 		// errors.Is desembrulha erros anotados com %w — ao contrário de
 		// os.IsNotExist, que só entende *PathError direto e converteria
@@ -154,56 +185,66 @@ func (r *resolver) readFile(path string) (string, error) {
 	return firstLine(data), nil
 }
 
-// dataDirUsable informa se $DATADIR pode ser LIDO, sem abortar quando ele não
-// existe.
-//
-// Um $DATADIR ausente é "fonte ausente" na leitura, não erro: a SPEC §7 e §11
-// justificam a remoção dos códigos 101 e 110 dizendo que machine-id e workspace
-// sempre alcançam a geração e o fallback "default". Se o nível 2 abortasse por
-// falta do diretório, o nível 3 seria inalcançável e a promessa não se
-// cumpriria — todo laptop de desenvolvedor e todo container sem volume montado
-// falharia por um diretório que a cadeia nem precisa usar.
-func (r *resolver) dataDirUsable() bool {
-	if r.dirOK {
-		return true
+// errNotDir marca um $DATADIR que existe, mas não é um diretório.
+var errNotDir = errors.New("não é um diretório")
+
+// checkDataDir inspeciona $DATADIR uma única vez e CLASSIFICA o resultado, em
+// vez de reduzi-lo a um booleano. "Ausente" é fs.ErrNotExist e nada mais — o
+// mesmo critério de machineIDFilePath (SPEC §7.2): permissão negada no
+// diretório pai, ELOOP, EIO ou ENAMETOOLONG são erros reais que o operador
+// precisa ver, não uma "fonte ausente".
+func (r *resolver) checkDataDir() error {
+	if r.dirChecked {
+		return r.dirErr
 	}
-	if r.dirBad {
-		return false
-	}
+	r.dirChecked = true
 	info, err := r.sys.Stat(r.dataDir)
-	if err != nil || !info.IsDir() {
-		r.dirBad = true
-		return false
+	switch {
+	case err != nil:
+		r.dirErr = err
+	case !info.IsDir():
+		r.dirErr = errNotDir
 	}
-	r.dirOK = true
-	return true
+	return r.dirErr
+}
+
+// dataDirFailure converte o erro classificado numa falha 100 com a causa real.
+func (r *resolver) dataDirFailure(err error) *failure {
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return newFailure(100, "DATADIR", fmt.Sprintf("%q não existe", r.dataDir))
+	case errors.Is(err, errNotDir):
+		return newFailure(100, "DATADIR", fmt.Sprintf("%q não é um diretório", r.dataDir))
+	default:
+		return newFailure(100, "DATADIR", fmt.Sprintf("%q inacessível: %v", r.dataDir, err))
+	}
 }
 
 // ensureDataDir valida que $DATADIR existe e é um diretório. Só deve ser
 // chamada imediatamente antes de GRAVAR: gerar uma identidade sem onde
 // persistí-la é uma falha legítima (SPEC §6).
 func (r *resolver) ensureDataDir() *failure {
-	if r.dataDirUsable() {
-		return nil
+	if err := r.checkDataDir(); err != nil {
+		return r.dataDirFailure(err)
 	}
-	return newFailure(100, "DATADIR",
-		fmt.Sprintf("%q não existe ou não é um diretório", r.dataDir))
+	return nil
 }
 
 // readDataFile lê um arquivo dentro de $DATADIR.
 // Retorna (valor, falha). valor == "" indica fonte ausente/vazia.
 func (r *resolver) readDataFile(name string) (string, *failure) {
-	if !r.dataDirUsable() {
-		r.logf("$DATADIR %q indisponível: fonte %s ignorada", r.dataDir, name)
-		return "", nil
+	if err := r.checkDataDir(); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			r.logf("$DATADIR %q inexistente: fonte %s ignorada", r.dataDir, name)
+			return "", nil
+		}
+		return "", r.dataDirFailure(err)
 	}
 	path := filepath.Join(r.dataDir, name)
-	v, err := r.readFile(path)
+	v, err := r.readDataPath(path)
 	if err != nil {
-		// Ausência do arquivo já é ("", nil) em readFile; aqui só chegam erros
-		// de I/O legítimos (permissão negada, disco com falha, etc.). Esses não
-		// devem ser silenciados como "fonte vazia" — mascarariam um problema
-		// real do $DATADIR e dificultariam o diagnóstico. Abortam com 100.
+		// Ausência do arquivo já é ("", nil) em readWith; aqui só chegam erros
+		// de I/O legítimos ou fontes inválidas (symlinks, etc.). Abortam com 100.
 		return "", newFailure(100, "DATADIR",
 			fmt.Sprintf("leitura de %s falhou: %v", path, err))
 	}
@@ -235,36 +276,47 @@ var (
 
 // regenSuffix nomeia o registro de regeneração de um arquivo auto-gerido, e
 // regenAttempts limita as tentativas de obtê-lo.
+// Janela do plano B de CreateExclusive (filesystem sem hard link): o arquivo
+// existe ANTES de ter conteúdo se o escritor for lento. Quem perde a corrida
+// e lê vazio ou parcial não pode concluir "corrompido" de imediato.
+// Relemos por um tempo limitado antes de declarar corrupção.
+var (
+	settleAttempts = 50
+	settleInterval = 20 * time.Millisecond
+	settleSleep    = time.Sleep
+)
+
+// readSettled relê path enquanto o conteúdo não for válido para k, até o teto.
+func (r *resolver) readSettled(path string, k identKind) (string, error) {
+	for i := 0; ; i++ {
+		raw, err := r.readDataPath(path)
+		if err != nil || k.valid(k.normalize(raw)) || i >= settleAttempts {
+			return raw, err
+		}
+		settleSleep(settleInterval)
+	}
+}
+
+// persistOrigin diz de onde saiu o valor que persistGenerated mandou adotar.
+type persistOrigin int
+
 const (
 	regenSuffix   = ".regen"
 	regenAttempts = 3
+
+	originCreated     persistOrigin = iota // arquivo criado do zero por ESTE processo
+	originRace                             // arquivo criado por outro processo nesta subida
+	originRegenerated                      // ESTE processo venceu a regeneração: valor novo
+	originRecord                           // registro já existente — desta subida OU de recuperação anterior
 )
 
 // persistGenerated persiste um valor recém-gerado em $DATADIR e devolve o valor
 // que deve ser ADOTADO — que pode ser o de outro processo, quando vários sobem
 // ao mesmo tempo sobre o mesmo volume. corrupt informa que o arquivo já existe
 // com conteúdo inválido e precisa ser substituído.
-//
-// Os dois casos precisam de arbitragens diferentes:
-//
-//   - Arquivo AUSENTE: a própria criação exclusiva arbitra. Quem cria vence;
-//     quem perde relê o arquivo e adota o valor do vencedor.
-//
-//   - Arquivo PRESENTE e inválido: a criação exclusiva não serve, porque o nome
-//     já está ocupado e todo processo perderia. Uma substituição atômica direta
-//     também não: ela é INCONDICIONAL, então cada processo gravaria o SEU valor
-//     e voltaria com uma identidade diferente na memória, ainda que só a última
-//     gravação sobrevivesse no disco. Era a mesma divergência do BUG-04 entrando
-//     por outra porta — e é o cenário de recuperação mais provável, já que um
-//     arquivo corrompido costuma significar que a máquina caiu no meio de uma
-//     gravação e agora várias réplicas sobem juntas para se recuperar.
-//     A disputa é então resolvida num REGISTRO à parte, criado com exclusão
-//     mútua: o primeiro processo a criá-lo vence, e é o valor dele que todos
-//     gravam no arquivo de identidade — a mesma gravação, byte a byte, em todos
-//     os processos.
-func (r *resolver) persistGenerated(k identKind, value string, corrupt bool) (string, *failure) {
+func (r *resolver) persistGenerated(k identKind, value string, corrupt bool) (string, persistOrigin, *failure) {
 	if f := r.ensureDataDir(); f != nil {
-		return "", f
+		return "", originCreated, f
 	}
 	path := filepath.Join(r.dataDir, k.file)
 	regen := filepath.Join(r.dataDir, "."+k.file+regenSuffix)
@@ -272,74 +324,92 @@ func (r *resolver) persistGenerated(k identKind, value string, corrupt bool) (st
 	if !corrupt {
 		created, err := r.sys.CreateExclusive(path, identLine(value), filePerm)
 		if err != nil {
-			return "", newFailure(k.writeCode, k.variable,
+			return "", originCreated, newFailure(k.writeCode, k.variable,
 				fmt.Sprintf("gravação em %s falhou: %v", path, err))
 		}
 		if created {
 			// Identidade nova a partir do zero: um registro de regeneração
-			// anterior está obsoleto. A limpeza é best-effort — deixá-lo para
-			// trás não compromete nada, só ocuparia espaço.
+			// anterior está obsoleto.
 			_ = r.sys.Remove(regen)
-			return value, nil
+			return value, originCreated, nil
 		}
 		// Perdemos a corrida: adotamos o valor de quem criou o arquivo.
-		adopted, err := r.readFile(path)
+		adopted, err := r.readSettled(path, k)
 		if err != nil {
-			return "", newFailure(100, "DATADIR",
+			return "", originCreated, newFailure(100, "DATADIR",
 				fmt.Sprintf("leitura de %s falhou: %v", path, err))
 		}
 		if v := k.normalize(adopted); k.valid(v) {
-			return v, nil
+			return v, originRace, nil
 		}
-		// O vencedor gravou lixo: seguimos pela arbitragem de regeneração.
-		r.warnf("%s: %s foi criado com conteúdo inválido (%q) e será REGERADO",
-			k.variable, path, adopted)
+		// O arquivo já existia ou o vencedor gravou lixo.
+		r.warnf("%s: %s existe com conteúdo inválido (%s) e será substituído",
+			k.variable, path, describeInvalid(adopted))
 		corrupt = true
 	}
 
+	origin := originRegenerated
 	for attempt := 0; attempt < regenAttempts; attempt++ {
 		created, err := r.sys.CreateExclusive(regen, identLine(value), filePerm)
 		if err != nil {
-			return "", newFailure(k.writeCode, k.variable,
+			return "", originCreated, newFailure(k.writeCode, k.variable,
 				fmt.Sprintf("gravação em %s falhou: %v", regen, err))
 		}
 
 		winner := value
 		if !created {
-			// Outro processo já registrou a regeneração: o valor é o dele.
-			recorded, err := r.readFile(regen)
+			// Outro processo já registrou a regeneração ou registro anterior existe.
+			recorded, err := r.readSettled(regen, k)
 			if err != nil {
-				return "", newFailure(100, "DATADIR",
+				return "", originCreated, newFailure(100, "DATADIR",
 					fmt.Sprintf("leitura de %s falhou: %v", regen, err))
 			}
 			v := k.normalize(recorded)
 			if !k.valid(v) {
-				// Registro incompleto. Só é possível se a criação exclusiva
-				// tiver caído no plano B (filesystem sem hard link) e o
-				// processo tiver morrido entre criar e gravar. Descarta e
-				// tenta de novo.
 				if err := r.sys.Remove(regen); err != nil && !errors.Is(err, fs.ErrNotExist) {
-					return "", newFailure(k.writeCode, k.variable,
+					return "", originCreated, newFailure(k.writeCode, k.variable,
 						fmt.Sprintf("remoção de %s falhou: %v", regen, err))
 				}
 				continue
 			}
 			winner = v
+			origin = originRecord
 		}
 
-		// Vencedor e perdedores gravam exatamente o mesmo conteúdo, então a
-		// substituição atômica é idempotente: qualquer ordem leva ao mesmo
-		// arquivo, e todo processo volta com o valor que está no disco.
+		// Vencedor e perdedores gravam exatamente o mesmo conteúdo.
 		if err := r.sys.ReplaceFile(path, identLine(winner), filePerm); err != nil {
-			return "", newFailure(k.writeCode, k.variable,
+			return "", originCreated, newFailure(k.writeCode, k.variable,
 				fmt.Sprintf("gravação em %s falhou: %v", path, err))
 		}
-		return winner, nil
+		return winner, origin, nil
 	}
 
-	return "", newFailure(k.writeCode, k.variable,
+	return "", originCreated, newFailure(k.writeCode, k.variable,
 		fmt.Sprintf("não foi possível registrar a regeneração em %s após %d tentativas",
 			regen, regenAttempts))
+}
+
+// reportPersisted emite o diagnóstico — e o aviso, quando uma identidade
+// persistida foi descartada ou restaurada — coerente com persistGenerated.
+func (r *resolver) reportPersisted(k identKind, subject, generated, adopted string, origin persistOrigin) {
+	path := filepath.Join(r.dataDir, k.file)
+	regen := filepath.Join(r.dataDir, "."+k.file+regenSuffix)
+	switch origin {
+	case originRecord:
+		r.warnf("%s: %s foi RESTAURADO a partir do registro de regeneração %s (%s). "+
+			"O registro pode vir de uma recuperação anterior; se a intenção era uma identidade nova, "+
+			"apague %s (não o esvazie): a criação do zero descarta o registro",
+			k.variable, path, regen, describeInvalid(adopted), path)
+		r.logf("%s: file %s = %q (restaurado do registro de regeneração)", k.variable, path, adopted)
+	case originRegenerated:
+		r.warnf("%s: %s foi REGERADO com valor novo (%s); a identidade %s muda a partir de agora",
+			k.variable, path, describeInvalid(adopted), subject)
+		r.logf("%s: generated = %q", k.variable, generated)
+	case originRace:
+		r.logf("%s: file %s = %q (definido por outro processo)", k.variable, path, adopted)
+	default:
+		r.logf("%s: generated = %q", k.variable, generated)
+	}
 }
 
 // env retorna a variável de ambiente com trim de whitespace. Usada para os
@@ -376,6 +446,9 @@ func (r *resolver) resolveDataDirPath() *failure {
 			fmt.Sprintf("%q é relativo ao diretório de trabalho; use um caminho absoluto", dir))
 	}
 	r.dataDir = filepath.Clean(dir)
+	if runtime.GOOS == "windows" && filepath.VolumeName(r.dataDir) == "" {
+		r.logf("DATADIR: %q sem letra de unidade; resolvido contra a unidade corrente do processo", r.dataDir)
+	}
 	r.logf("DATADIR: %s = %q", origin, r.dataDir)
 	return nil
 }
@@ -416,7 +489,13 @@ func (r *resolver) machineIDFilePath() (path string, explicit bool, f *failure) 
 	if midFile == "" {
 		return DefaultMachineIDFile, false, nil
 	}
-	if _, err := r.sys.Stat(midFile); err != nil {
+	if !rootedPath(midFile) {
+		return "", true, newFailure(100, "MACHINE_ID_FILE",
+			fmt.Sprintf("%q é relativo ao diretório de trabalho; use um caminho absoluto", midFile))
+	}
+	midFile = filepath.Clean(midFile)
+	info, err := r.sys.Stat(midFile)
+	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			// SPEC §7.2: env apontando para arquivo inexistente troca para o
 			// padrão do sistema. Apenas "inexistente" — não "qualquer erro".
@@ -425,6 +504,11 @@ func (r *resolver) machineIDFilePath() (path string, explicit bool, f *failure) 
 		}
 		return "", true, newFailure(100, "MACHINE_ID_FILE",
 			fmt.Sprintf("%q inacessível: %v", midFile, err))
+	}
+	if !info.Mode().IsRegular() || info.Size() > maxIdentFileSize {
+		return "", true, newFailure(100, "MACHINE_ID_FILE",
+			fmt.Sprintf("%q não é um arquivo comum utilizável (tipo %s, %d bytes; limite %d)",
+				midFile, info.Mode().Type(), info.Size(), maxIdentFileSize))
 	}
 	return midFile, true, nil
 }
@@ -437,7 +521,7 @@ func (r *resolver) resolveMachineID() (string, *failure) {
 		v := normalizeMachineID(raw)
 		if !validMachineID(v) {
 			return "", newFailure(102, "MACHINE_ID",
-				fmt.Sprintf("%q não casa com %s", v, patMachineID))
+				fmt.Sprintf("%s não casa com %s", preview(raw), patMachineID))
 		}
 		r.logf("MACHINE_ID: env = %q", v)
 		return v, nil
@@ -475,9 +559,9 @@ func (r *resolver) resolveMachineID() (string, *failure) {
 			return v, nil
 		}
 		corrupt = true
-		r.warnf("MACHINE_ID: %s tinha conteúdo inválido (%q) e será REGERADO; "+
-			"a identidade desta máquina muda a partir de agora",
-			filepath.Join(r.dataDir, fileMachineID), stored)
+		r.warnf("MACHINE_ID: %s tinha conteúdo inválido (%s) e será substituído "+
+			"(o aviso seguinte diz se foi regenerado ou restaurado de um registro)",
+			filepath.Join(r.dataDir, fileMachineID), describeInvalid(stored))
 	}
 
 	// Nível 4: gerar a partir de um UUIDv7 (hífens removidos => 32 hex).
@@ -488,21 +572,16 @@ func (r *resolver) resolveMachineID() (string, *failure) {
 	}
 	generated := normalizeMachineID(uuid)
 	if !validMachineID(generated) {
-		return "", newFailure(102, "MACHINE_ID",
+		return "", newFailure(114, "MACHINE_ID",
 			fmt.Sprintf("valor gerado %q não casa com %s", generated, patMachineID))
 	}
 
-	adopted, f := r.persistGenerated(kindMachineID, generated, corrupt)
+	adopted, origin, f := r.persistGenerated(kindMachineID, generated, corrupt)
 	if f != nil {
 		return "", f
 	}
-	if adopted != generated {
-		r.logf("MACHINE_ID: file %s = %q (definido por outro processo)",
-			filepath.Join(r.dataDir, fileMachineID), adopted)
-		return adopted, nil
-	}
-	r.logf("MACHINE_ID: generated = %q", generated)
-	return generated, nil
+	r.reportPersisted(kindMachineID, "desta máquina", generated, adopted, origin)
+	return adopted, nil
 }
 
 // ----- AGENT_NAME -----
@@ -513,7 +592,7 @@ func (r *resolver) resolveAgentName() (string, *failure) {
 	if raw := strings.ToLower(r.envField("AGENT_NAME")); raw != "" {
 		if !validAgentName(raw) {
 			return "", newFailure(104, "AGENT_NAME",
-				fmt.Sprintf("%q não casa com %s (máx. %d caracteres)", raw, patAgentName, maxFieldLen))
+				fmt.Sprintf("%s não casa com %s (máx. %d caracteres)", preview(raw), patAgentName, maxFieldLen))
 		}
 		r.logf("AGENT_NAME: env = %q", raw)
 		return raw, nil
@@ -528,7 +607,8 @@ func (r *resolver) resolveAgentName() (string, *failure) {
 		v = strings.ToLower(v)
 		if !validAgentName(v) {
 			return "", newFailure(104, "AGENT_NAME",
-				fmt.Sprintf("%q não casa com %s (máx. %d caracteres)", v, patAgentName, maxFieldLen))
+				fmt.Sprintf("conteúdo de %s (%s) não casa com %s (máx. %d caracteres)",
+					filepath.Join(r.dataDir, fileAgentName), describeInvalid(v), patAgentName, maxFieldLen))
 		}
 		r.logf("AGENT_NAME: file %s = %q", filepath.Join(r.dataDir, fileAgentName), v)
 		return v, nil
@@ -565,7 +645,7 @@ func (r *resolver) resolveAgentUUID() (string, *failure) {
 	if raw := strings.ToLower(r.envField("AGENT_UUID")); raw != "" {
 		if !validAgentUUID(raw) {
 			return "", newFailure(107, "AGENT_UUID",
-				fmt.Sprintf("%q não é um UUIDv7 canônico", raw))
+				fmt.Sprintf("%s não é um UUIDv7 canônico", preview(raw)))
 		}
 		r.logf("AGENT_UUID: env = %q", raw)
 		return raw, nil
@@ -583,9 +663,9 @@ func (r *resolver) resolveAgentUUID() (string, *failure) {
 			return v, nil
 		}
 		corrupt = true
-		r.warnf("AGENT_UUID: %s tinha conteúdo inválido (%q) e será REGERADO; "+
-			"a identidade deste agente muda a partir de agora",
-			filepath.Join(r.dataDir, fileAgentUUID), stored)
+		r.warnf("AGENT_UUID: %s tinha conteúdo inválido (%s) e será substituído "+
+			"(o aviso seguinte diz se foi regenerado ou restaurado de um registro)",
+			filepath.Join(r.dataDir, fileAgentUUID), describeInvalid(stored))
 	}
 
 	// Nível 3: gerar UUIDv7 e persistir.
@@ -600,17 +680,12 @@ func (r *resolver) resolveAgentUUID() (string, *failure) {
 			fmt.Sprintf("valor gerado %q não é um UUIDv7 canônico", generated))
 	}
 
-	adopted, f := r.persistGenerated(kindAgentUUID, generated, corrupt)
+	adopted, origin, f := r.persistGenerated(kindAgentUUID, generated, corrupt)
 	if f != nil {
 		return "", f
 	}
-	if adopted != generated {
-		r.logf("AGENT_UUID: file %s = %q (definido por outro processo)",
-			filepath.Join(r.dataDir, fileAgentUUID), adopted)
-		return adopted, nil
-	}
-	r.logf("AGENT_UUID: generated = %q", generated)
-	return generated, nil
+	r.reportPersisted(kindAgentUUID, "deste agente", generated, adopted, origin)
+	return adopted, nil
 }
 
 // ----- HOSTNAME -----
@@ -631,7 +706,7 @@ func (r *resolver) resolveHostname() (string, *failure) {
 	raw = strings.ToLower(raw)
 	if !validHostname(raw) {
 		return "", newFailure(109, "HOSTNAME",
-			fmt.Sprintf("%q não casa com %s nem com as regras de rótulo da RFC 1123", raw, patHostname))
+			fmt.Sprintf("%s não casa com %s nem com as regras de rótulo da RFC 1123", preview(raw), patHostname))
 	}
 	r.logf("HOSTNAME: %s = %q", origin, raw)
 	return raw, nil
@@ -645,7 +720,7 @@ func (r *resolver) resolveWorkspace() (string, *failure) {
 	if raw := strings.ToLower(r.envField("WORKSPACE")); raw != "" {
 		if !validWorkspace(raw) {
 			return "", newFailure(111, "WORKSPACE",
-				fmt.Sprintf("%q não casa com %s (máx. %d caracteres)", raw, patWorkspace, maxFieldLen))
+				fmt.Sprintf("%s não casa com %s (máx. %d caracteres)", preview(raw), patWorkspace, maxFieldLen))
 		}
 		r.logf("WORKSPACE: env = %q", raw)
 		return raw, nil
@@ -660,7 +735,8 @@ func (r *resolver) resolveWorkspace() (string, *failure) {
 		v = strings.ToLower(v)
 		if !validWorkspace(v) {
 			return "", newFailure(111, "WORKSPACE",
-				fmt.Sprintf("%q não casa com %s (máx. %d caracteres)", v, patWorkspace, maxFieldLen))
+				fmt.Sprintf("conteúdo de %s (%s) não casa com %s (máx. %d caracteres)",
+					filepath.Join(r.dataDir, fileWorkspace), describeInvalid(v), patWorkspace, maxFieldLen))
 		}
 		r.logf("WORKSPACE: file %s = %q", filepath.Join(r.dataDir, fileWorkspace), v)
 		return v, nil

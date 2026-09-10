@@ -24,7 +24,7 @@ module test-ident
 
 go 1.22
 
-require github.com/patrickbrandao/go-loghub-ident v0.1.0
+require github.com/patrickbrandao/go-loghub-ident v0.3.0
 ```
 
 ## 3. Escreva o `test-ident.go`

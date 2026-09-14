@@ -96,7 +96,30 @@ func (osSystem) Stat(path string) (os.FileInfo, error) { return os.Stat(path) }
 func (osSystem) ReadFile(path string) ([]byte, error) { return readRegular(path, true) }
 
 // ReadFileNoFollow lê um arquivo de $DATADIR sem seguir links.
-func (osSystem) ReadFileNoFollow(path string) ([]byte, error) { return readRegular(path, false) }
+//
+// Um processo irmão pode publicar o arquivo via ReplaceFile (rename atômico)
+// entre o Lstat e o Open, e então o arquivo aberto não é o inspecionado. Isso
+// é troca legítima, não ataque: a leitura é refeita do zero, com validação
+// completa, algumas vezes antes de desistir. Um link plantado continua sendo
+// recusado, porque cada tentativa repete o Lstat.
+func (osSystem) ReadFileNoFollow(path string) ([]byte, error) {
+	var err error
+	for attempt := 0; attempt < maxReplacedRetries; attempt++ {
+		var data []byte
+		data, err = readRegular(path, false)
+		if !errors.Is(err, errReplaced) {
+			return data, err
+		}
+	}
+	return nil, err
+}
+
+// maxReplacedRetries limita as releituras de ReadFileNoFollow quando o arquivo
+// é substituído durante a leitura.
+const maxReplacedRetries = 5
+
+// errReplaced marca um arquivo trocado entre a inspeção e a abertura.
+var errReplaced = fmt.Errorf("%w: arquivo substituído durante a leitura", errInvalidSource)
 
 func readRegular(path string, follow bool) ([]byte, error) {
 	stat := os.Stat
@@ -139,7 +162,7 @@ func readRegular(path string, follow bool) ([]byte, error) {
 		// um link nesse intervalo, o que abrimos não é o que inspecionamos.
 		if !os.SameFile(info, opened) {
 			return nil, fmt.Errorf("%w: %s mudou entre a inspeção e a abertura",
-				errInvalidSource, path)
+				errReplaced, path)
 		}
 	}
 	// O LimitReader cobre a janela TOCTOU entre o Stat e o Open.

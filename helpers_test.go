@@ -51,7 +51,11 @@ func TestHasControlBytes(t *testing.T) {
 		{"/data\r", true},
 		{"/data\x00", true},
 		{"\x1f/data", true},
-		{"/data\x7f", true}, // DEL
+		{"/data\x7f", true},     // DEL
+		{"/data\u0085", true},   // NEL: controle C1 em UTF-8
+		{"/data\u009f", true},   // último controle C1
+		{"/data\u00a0x", false}, // NBSP não é controle
+		{"/data\xff", false},    // byte inválido em UTF-8 não é controle
 	} {
 		if got := hasControlBytes(tc.in); got != tc.want {
 			t.Errorf("hasControlBytes(%q) = %v (esperava %v)", tc.in, got, tc.want)

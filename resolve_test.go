@@ -33,11 +33,12 @@ type fakeSystem struct {
 	perms     map[string]os.FileMode // caminho -> permissão recebida na gravação
 	uuidCalls int
 
-	symlinks  map[string]string
-	statErr   map[string]error
-	fileSizes map[string]int64
-	fileModes map[string]os.FileMode
-	removeErr map[string]error // caminho -> erro forçado na remoção
+	symlinks   map[string]string
+	statErr    map[string]error
+	fileSizes  map[string]int64
+	fileModes  map[string]os.FileMode
+	fileMtimes map[string]time.Time // caminho -> mtime devolvido por Stat (zero = arquivo antigo)
+	removeErr  map[string]error     // caminho -> erro forçado na remoção
 
 	// onRemoved é chamado após uma remoção bem-sucedida. Permite simular outro
 	// processo que recria o arquivo logo em seguida (um registro de
@@ -57,21 +58,22 @@ func init() {
 
 func newFakeSystem() *fakeSystem {
 	return &fakeSystem{
-		env:       map[string]string{},
-		files:     map[string]string{},
-		dirs:      map[string]bool{},
-		symlinks:  map[string]string{},
-		statErr:   map[string]error{},
-		readErr:   map[string]error{},
-		fileSizes: map[string]int64{},
-		fileModes: map[string]os.FileMode{},
-		removeErr: map[string]error{},
-		writeErr:  map[string]error{},
-		written:   map[string]string{},
-		perms:     map[string]os.FileMode{},
-		args:      []string{"/usr/local/bin/myservice"},
-		hostname:  "node01",
-		uuid:      "019e99e3-42f0-7882-9719-2305ff84949c",
+		env:        map[string]string{},
+		files:      map[string]string{},
+		dirs:       map[string]bool{},
+		symlinks:   map[string]string{},
+		statErr:    map[string]error{},
+		readErr:    map[string]error{},
+		fileSizes:  map[string]int64{},
+		fileModes:  map[string]os.FileMode{},
+		fileMtimes: map[string]time.Time{},
+		removeErr:  map[string]error{},
+		writeErr:   map[string]error{},
+		written:    map[string]string{},
+		perms:      map[string]os.FileMode{},
+		args:       []string{"/usr/local/bin/myservice"},
+		hostname:   "node01",
+		uuid:       "019e99e3-42f0-7882-9719-2305ff84949c",
 	}
 }
 
@@ -94,7 +96,7 @@ func (f *fakeSystem) Stat(path string) (os.FileInfo, error) {
 			sz = customSz
 		}
 		mode := f.fileModes[path]
-		return fakeInfo{name: filepath.Base(path), size: sz, mode: mode}, nil
+		return fakeInfo{name: filepath.Base(path), size: sz, mode: mode, mtime: f.fileMtimes[path]}, nil
 	}
 	return nil, &fs.PathError{Op: "stat", Path: path, Err: fs.ErrNotExist}
 }
@@ -194,10 +196,11 @@ func (f *fakeSystem) GenerateUUIDv7() (string, error) {
 
 // fakeInfo é um os.FileInfo mínimo para Stat.
 type fakeInfo struct {
-	name string
-	dir  bool
-	size int64
-	mode os.FileMode
+	name  string
+	dir   bool
+	size  int64
+	mode  os.FileMode
+	mtime time.Time // zero por padrão: um arquivo "antigo" para a janela de estabilização
 }
 
 func (i fakeInfo) Name() string { return i.name }
@@ -211,7 +214,7 @@ func (i fakeInfo) Mode() os.FileMode {
 	}
 	return 0o644
 }
-func (i fakeInfo) ModTime() time.Time { return time.Time{} }
+func (i fakeInfo) ModTime() time.Time { return i.mtime }
 func (i fakeInfo) IsDir() bool        { return i.dir }
 func (i fakeInfo) Sys() any           { return nil }
 
@@ -1562,5 +1565,190 @@ func TestResolve_AgentUUID_GeneratedInvalidAborts107(t *testing.T) {
 	}
 	if _, ok := sys.files["/data/agent_uuid"]; ok {
 		t.Error("um valor gerado inválido nunca pode ser persistido")
+	}
+}
+
+// ----- BUG-23: arquivo auto-gerido VAZIO em $DATADIR -----
+//
+// Um arquivo vazio não é "ausente": ou outro processo acabou de publicá-lo e o
+// cache de atributos ainda não mostra o conteúdo (NFS, BUG-20), ou é um resíduo
+// definitivo (touch de provisionamento, cópia interrompida). Os dois casos são
+// distinguidos pela idade do arquivo, e só o primeiro justifica esperar.
+
+// countSleeps substitui settleSleep por um contador durante o teste; onSleep,
+// se informado, recebe o número da espera e pode alterar o fake no meio dela.
+func countSleeps(t *testing.T, onSleep func(n int)) *int {
+	t.Helper()
+	n := new(int)
+	old := settleSleep
+	settleSleep = func(time.Duration) {
+		*n++
+		if onSleep != nil {
+			onSleep(*n)
+		}
+	}
+	t.Cleanup(func() { settleSleep = old })
+	return n
+}
+
+func TestResolve_ManagedFile_EmptyAndOld_RegeneratesWithoutWaiting(t *testing.T) {
+	for _, tc := range []struct {
+		file, variable string
+		got            func(*identity) string
+	}{
+		{fileAgentUUID, "AGENT_UUID", func(id *identity) string { return id.agentUUID }},
+		{fileMachineID, "MACHINE_ID", func(id *identity) string { return id.machineID }},
+	} {
+		t.Run(tc.file, func(t *testing.T) {
+			sys := newFakeSystem().withDataDir()
+			sys.env["MACHINE_ID"] = "abcdef0123456789abcdef0123456789"
+			sys.env["AGENT_UUID"] = "019e99e3-42f0-7882-9719-2305ff84949c"
+			sys.env["WORKSPACE"] = "prod"
+			delete(sys.env, tc.variable) // só este campo vem do $DATADIR
+			path := "/data/" + tc.file
+			sys.files[path] = "" // vazio; sem mtime no fake = antigo
+			sleeps := countSleeps(t, nil)
+
+			id, f := resolve(sys)
+			if f != nil {
+				t.Fatalf("falha inesperada: %+v", f)
+			}
+			if *sleeps != 0 {
+				t.Errorf("esperou %d vez(es) por um arquivo antigo; não deveria esperar", *sleeps)
+			}
+			generated := sys.uuid
+			if tc.file == fileMachineID {
+				generated = normalizeMachineID(sys.uuid)
+			}
+			if got := tc.got(id); got != generated {
+				t.Errorf("%s = %q (esperava o valor regenerado %q)", tc.variable, got, generated)
+			}
+			if got := sys.files[path]; got != generated+"\n" {
+				t.Errorf("%s = %q (esperava %q)", path, got, generated+"\n")
+			}
+			if _, ok := sys.files["/data/."+tc.file+regenSuffix]; !ok {
+				t.Error("a regeneração deveria ter passado pelo registro .regen")
+			}
+			joined := strings.Join(id.warnings, "\n")
+			if !strings.Contains(joined, "tinha conteúdo inválido (0 bytes") || !strings.Contains(joined, "REGERADO") {
+				t.Errorf("avisos esperados ausentes: %q", id.warnings)
+			}
+		})
+	}
+}
+
+// Arquivo vazio RECENTE: é o que um irmão acabou de publicar num volume de
+// rede. Esperamos, e quando o conteúdo aparece ele é adotado sem gerar nada.
+func TestResolve_ManagedFile_EmptyButRecent_AdoptsWhenItSettles(t *testing.T) {
+	sys := agentUUIDOnly()
+	winner := "0190aaaa-bbbb-7ccc-8ddd-eeeeffff0000"
+	sys.files["/data/agent_uuid"] = ""
+	sys.fileMtimes["/data/agent_uuid"] = time.Now()
+	// Na 3ª releitura o conteúdo "chega" (cache de atributos atualizado).
+	sleeps := countSleeps(t, func(n int) {
+		if n == 3 {
+			sys.files["/data/agent_uuid"] = winner + "\n"
+		}
+	})
+
+	id, f := resolve(sys)
+	if f != nil {
+		t.Fatalf("falha inesperada: %+v", f)
+	}
+	if id.agentUUID != winner {
+		t.Errorf("agentUUID = %q (esperava adotar %q após a estabilização)", id.agentUUID, winner)
+	}
+	if *sleeps != 3 {
+		t.Errorf("esperou %d vez(es); esperava 3", *sleeps)
+	}
+	if sys.uuidCalls != 0 {
+		t.Errorf("gerou %d UUID(s); nada deveria ser gerado quando o arquivo estabiliza", sys.uuidCalls)
+	}
+	if len(id.warnings) != 0 {
+		t.Errorf("nenhum aviso esperado: %q", id.warnings)
+	}
+	if _, ok := sys.files["/data/.agent_uuid.regen"]; ok {
+		t.Error("nenhum registro de regeneração deveria existir")
+	}
+	if !strings.Contains(strings.Join(id.debug, "\n"), "estabilização") {
+		t.Errorf("debug deveria registrar a estabilização: %q", id.debug)
+	}
+}
+
+// Arquivo vazio recente que nunca estabiliza: a espera vai até o teto e só
+// então o arquivo é declarado corrompido e regenerado, com aviso.
+func TestResolve_ManagedFile_EmptyButRecent_TimesOutThenRegenerates(t *testing.T) {
+	sys := agentUUIDOnly()
+	sys.files["/data/agent_uuid"] = ""
+	sys.fileMtimes["/data/agent_uuid"] = time.Now()
+	sleeps := countSleeps(t, nil)
+
+	id, f := resolve(sys)
+	if f != nil {
+		t.Fatalf("falha inesperada: %+v", f)
+	}
+	if *sleeps != settleAttempts {
+		t.Errorf("esperou %d vez(es); esperava o teto de %d", *sleeps, settleAttempts)
+	}
+	if id.agentUUID != sys.uuid {
+		t.Errorf("agentUUID = %q (esperava o valor regenerado %q)", id.agentUUID, sys.uuid)
+	}
+	if !strings.Contains(strings.Join(id.warnings, "\n"), "tinha conteúdo inválido (0 bytes") {
+		t.Errorf("faltou o aviso de descarte: %q", id.warnings)
+	}
+}
+
+// Sem conseguir inspecionar a idade do arquivo, a espera é a cautelosa: a
+// janela inteira, contada a partir de agora.
+func TestResolve_ManagedFile_EmptyWithoutStat_WaitsCautiously(t *testing.T) {
+	sys := agentUUIDOnly()
+	sys.files["/data/agent_uuid"] = ""
+	sys.statErr["/data/agent_uuid"] = errors.New("stale file handle")
+	sleeps := countSleeps(t, nil)
+
+	id, f := resolve(sys)
+	if f != nil {
+		t.Fatalf("falha inesperada: %+v", f)
+	}
+	if *sleeps != settleAttempts {
+		t.Errorf("esperou %d vez(es); esperava o teto de %d", *sleeps, settleAttempts)
+	}
+	if id.agentUUID != sys.uuid {
+		t.Errorf("agentUUID = %q (esperava o valor regenerado %q)", id.agentUUID, sys.uuid)
+	}
+}
+
+// Perdemos a corrida de criação e o arquivo do vencedor ainda aparece vazio
+// (cache de atributos): por ser recente, esperamos e adotamos quando
+// estabiliza — o BUG-20 continua coberto depois do BUG-23.
+func TestResolve_LostRace_RecentEmptyFileSettles(t *testing.T) {
+	sys := agentUUIDOnly()
+	winner := "0190aaaa-bbbb-7ccc-8ddd-eeeeffff0000"
+	sys.files["/data/agent_uuid"] = winner + "\n"
+	sys.readErr["/data/agent_uuid"] = notExist("/data/agent_uuid")
+	sys.onCreateRefused = func(p string) {
+		// O vencedor acabou de publicar; a nossa primeira releitura ainda vê vazio.
+		delete(sys.readErr, p)
+		sys.fileMtimes[p] = time.Now()
+		sys.files[p] = ""
+	}
+	sleeps := countSleeps(t, func(n int) {
+		if n == 2 {
+			sys.files["/data/agent_uuid"] = winner + "\n"
+		}
+	})
+
+	id, f := resolve(sys)
+	if f != nil {
+		t.Fatalf("falha inesperada: %+v", f)
+	}
+	if id.agentUUID != winner {
+		t.Errorf("agentUUID = %q (esperava adotar %q)", id.agentUUID, winner)
+	}
+	if *sleeps != 2 {
+		t.Errorf("esperou %d vez(es); esperava 2", *sleeps)
+	}
+	if len(id.warnings) != 0 {
+		t.Errorf("nenhum aviso esperado: %q", id.warnings)
 	}
 }

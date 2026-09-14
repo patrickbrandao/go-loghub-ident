@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// Testes de regressão permanentes de persistência durável e concorrência (BUG-17 a BUG-20).
+// Testes de regressão permanentes de persistência durável (BUG-17 e BUG-19).
 
 // ----- BUG-17: arquivos de identidade gravados sem fsync -----
 

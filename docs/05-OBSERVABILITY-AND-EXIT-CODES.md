@@ -15,7 +15,7 @@ A biblioteca segue o princípio unix de **silêncio no caminho de sucesso**:
 
 ## 2. Modo de Diagnóstico Debug (`LOGHUB_IDENT_DEBUG`)
 
-Quando a variável de ambiente `LOGHUB_IDENT_DEBUG` estiver definida com qualquer valor não-vazio (`LOGHUB_IDENT_DEBUG=1` ou `LOGHUB_IDENT_DEBUG=true`), a biblioteca escreve em `stderr` **exatamente 6 linhas** (uma para cada campo resolvido, incluindo `DATADIR`):
+Quando a variável de ambiente `LOGHUB_IDENT_DEBUG` estiver definida com qualquer valor não-vazio (`LOGHUB_IDENT_DEBUG=1` ou `LOGHUB_IDENT_DEBUG=true`), a biblioteca escreve em `stderr` **uma linha por campo resolvido** (seis, incluindo `DATADIR`), precedidas, quando houver, por linhas de diagnóstico sobre fontes ignoradas — por exemplo `$DATADIR` inexistente, `MACHINE_ID_FILE` inexistente, conteúdo inválido em `/etc/machine-id` ou um arquivo fora da janela de estabilização:
 
 ```text
 lib-loghub-ident: debug: DATADIR: env = "/data"
@@ -35,6 +35,9 @@ lib-loghub-ident: debug: WORKSPACE: fallback = "default"
    - `fallback`: Fallback determinístico (`default` para workspace).
    - `generated`: Gerado via UUIDv7 em runtime.
    - `os.Hostname`: Obtido via chamada de sistema.
+   - `file <caminho> (após estabilização)`: lido de um arquivo auto-gerido que estava vazio e estabilizou dentro da janela (`04` §4).
+   - `file <caminho> (definido por outro processo)`: adotado do processo irmão que venceu a corrida de criação.
+   - `file <caminho> (restaurado do registro de regeneração)`: adotado do registro `.regen` de uma recuperação prévia.
 3. **Emissão Prévia a Falhas:** As linhas de debug são emitidas **antes** de qualquer encerramento por erro. Se o processo abortar no campo 4 (`AGENT_UUID`), os campos 1, 2 e 3 já estarão registrados no log, permitindo diagnosticar quais fontes alimentaram os campos anteriores.
 
 ---
@@ -52,16 +55,18 @@ lib-loghub-ident: aviso: <mensagem>
 ### Casos de Emissão:
 
 #### 1. Descarte e Regeneração de Identidade Persistida (`BUG-03`)
-Ocorre quando `$DATADIR/machine_id` ou `$DATADIR/agent_uuid` contém dados corrompidos ou inválidos:
+Ocorre quando `$DATADIR/machine_id` ou `$DATADIR/agent_uuid` contém dados corrompidos, inválidos ou vazios (**`BUG-23`**). São sempre **duas linhas**: a primeira anuncia o descarte, a segunda diz o desfecho:
 ```text
-lib-loghub-ident: aviso: MACHINE_ID: /data/machine_id tinha conteúdo inválido (16 bytes, hash ...) e será REGERADO; a identidade desta máquina muda a partir de agora
+lib-loghub-ident: aviso: MACHINE_ID: /data/machine_id tinha conteúdo inválido (16 bytes, hash 8f3a1b0c9e7d4a2f) e será substituído (o aviso seguinte diz se foi regenerado ou restaurado de um registro)
+lib-loghub-ident: aviso: MACHINE_ID: /data/machine_id foi REGERADO com valor novo (32 bytes, hash 5d41402abc4b2a76); a identidade desta máquina muda a partir de agora
 ```
+Quem perde a corrida de criação para um vencedor que gravou lixo vê, na primeira linha, `existe com conteúdo inválido (...) e será substituído`.
 - **Proteção contra Vazamento de Segredos:** A biblioteca **nunca** imprime o conteúdo corrompido em claro no log. Ela reporta apenas a contagem de bytes e o **hash FNV-1a 64-bit** em hexadecimal. Isso permite aos operadores correlacionar o arquivo com dumps de auditoria sem expor senhas ou tokens que tenham sido gravados indevidamente no arquivo.
 
 #### 2. Adoção de Regeneração Concorrente
-Ocorre quando um processo réplica descobre que a identidade corrompida já foi regerada e arbitrada por um processo irmão via `.regen`:
+Ocorre quando um processo réplica descobre que a identidade corrompida já foi regerada e arbitrada por um processo irmão via `.regen` — ou quando o registro vem de uma recuperação anterior. A segunda linha passa a ser:
 ```text
-lib-loghub-ident: aviso: MACHINE_ID: adotando regeneração prévia de /data/machine_id (novo valor gravado em /data/.machine_id.regen)
+lib-loghub-ident: aviso: MACHINE_ID: /data/machine_id foi RESTAURADO a partir do registro de regeneração /data/.machine_id.regen (32 bytes, hash 5d41402abc4b2a76). O registro pode vir de uma recuperação anterior; se a intenção era uma identidade nova, apague /data/machine_id (não o esvazie): a criação do zero descarta o registro
 ```
 
 ---

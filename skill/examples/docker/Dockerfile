@@ -23,7 +23,10 @@ FROM gcr.io/distroless/static-debian12:nonroot
 # Binário executável
 COPY --from=builder /out/app /app
 
-# Volume padrão para persistência de machine_id e agent_uuid
+# Volume para persistência de machine_id e agent_uuid. Monte um volume NOMEADO
+# (docker run -v loghub-ident:/data ...): o volume anônimo que VOLUME cria é
+# descartado ao recriar o container (ou com --rm) e a identidade seria gerada
+# de novo a cada execução.
 VOLUME ["/data"]
 
 # Configurações padrão recomendadas

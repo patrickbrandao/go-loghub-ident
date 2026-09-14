@@ -174,16 +174,24 @@ func (r *resolver) readFile(path string) (string, error) {
 }
 
 func (r *resolver) readDataPath(path string) (string, error) {
+	v, _, err := r.readDataPathExists(path)
+	return v, err
+}
+
+// readDataPathExists é readDataPath informando também se o arquivo existe:
+// para os arquivos auto-geridos, "ausente" e "presente mas vazio" têm
+// tratamentos diferentes (ver readManaged).
+func (r *resolver) readDataPathExists(path string) (value string, exists bool, err error) {
 	data, err := r.sys.ReadFileNoFollow(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return "", nil
+			return "", false, nil
 		}
 		// Fontes inválidas em $DATADIR (symlinks, FIFOs, > 4 KiB) não são
 		// engolidas como ausência: abortam com código 100 conforme a SPEC §13.
-		return "", err
+		return "", false, err
 	}
-	return firstLine(data), nil
+	return firstLine(data), true, nil
 }
 
 func (r *resolver) readWith(read func(string) ([]byte, error), path string) (string, error) {
@@ -270,6 +278,63 @@ func (r *resolver) readDataFile(name string) (string, *failure) {
 	return v, nil
 }
 
+// managedState classifica o que readManaged encontrou em $DATADIR.
+type managedState int
+
+const (
+	managedAbsent  managedState = iota // arquivo ausente (ou $DATADIR inexistente)
+	managedValid                       // conteúdo válido, já normalizado
+	managedCorrupt                     // arquivo existe com conteúdo inválido, inclusive vazio
+)
+
+// readManaged lê um arquivo auto-gerido ($DATADIR/machine_id ou agent_uuid) e
+// classifica o resultado. Diferente de readDataFile, "presente mas vazio" não é
+// "ausente": ou é o que um processo irmão acabou de publicar e o cache de
+// atributos do volume ainda não mostra (NFS, BUG-20), ou é um resíduo
+// definitivo — um touch de provisionamento, uma cópia interrompida (BUG-23).
+// readSettled distingue os dois pela idade do arquivo; só depois disso o vazio
+// é declarado corrompido. O aviso de descarte sai daqui, para todo conteúdo
+// inválido, e o chamador segue para a regeneração.
+func (r *resolver) readManaged(k identKind) (value string, state managedState, f *failure) {
+	if err := r.checkDataDir(); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			r.logf("$DATADIR %q inexistente: fonte %s ignorada", r.dataDir, k.file)
+			return "", managedAbsent, nil
+		}
+		return "", managedAbsent, r.dataDirFailure(err)
+	}
+	path := filepath.Join(r.dataDir, k.file)
+	raw, exists, err := r.readDataPathExists(path)
+	if err == nil && !exists {
+		return "", managedAbsent, nil
+	}
+	settled := false
+	if err == nil && raw == "" {
+		// Vazio: se o arquivo for recente, espera a estabilização; se for
+		// antigo, readSettled devolve na hora.
+		raw, err = r.readSettled(path, k)
+		settled = true
+	}
+	if err != nil {
+		// Ausência já foi tratada acima; aqui só chegam erros de I/O legítimos
+		// ou fontes inválidas (symlinks, etc.). Abortam com 100.
+		return "", managedAbsent, newFailure(100, "DATADIR",
+			fmt.Sprintf("leitura de %s falhou: %v", path, err))
+	}
+	if v := k.normalize(raw); k.valid(v) {
+		if settled {
+			r.logf("%s: file %s = %q (após estabilização)", k.variable, path, v)
+		} else {
+			r.logf("%s: file %s = %q", k.variable, path, v)
+		}
+		return v, managedValid, nil
+	}
+	r.warnf("%s: %s tinha conteúdo inválido (%s) e será substituído "+
+		"(o aviso seguinte diz se foi regenerado ou restaurado de um registro)",
+		k.variable, path, describeInvalid(raw))
+	return "", managedCorrupt, nil
+}
+
 // identLine normaliza o conteúdo a gravar: exatamente uma linha, terminada por
 // um único "\n" (sem linha em branco extra se o valor já vier com quebra).
 func identLine(content string) []byte {
@@ -295,29 +360,64 @@ var (
 
 // regenSuffix nomeia o registro de regeneração de um arquivo auto-gerido, e
 // regenAttempts limita as tentativas de obtê-lo.
-// Janela do plano B de CreateExclusive (filesystem sem hard link): o arquivo
-// existe ANTES de ter conteúdo se o escritor for lento. Quem perde a corrida
-// e lê vazio ou parcial não pode concluir "corrompido" de imediato.
-// Relemos por um tempo limitado antes de declarar corrupção.
+//
+// Janela de estabilização: quem perde a corrida de criação pode abrir o arquivo
+// do vencedor antes que o cache de atributos do volume (NFS) mostre o conteúdo
+// completo, lendo vazio ou parcial (BUG-20). Quem lê vazio ou parcial não pode
+// concluir "corrompido" de imediato: relê por um tempo limitado antes de
+// declarar corrupção.
 var (
 	// settleAttempts * settleInterval = 10 s de espera máxima antes de declarar
-	// corrupção. Em volumes de rede (NFS) ou no plano B de CreateExclusive
-	// (cujo claimTTL é 10 s), o perdedor da corrida não pode descartar
-	// precipitadamente o arquivo enquanto o vencedor ainda grava/sincroniza.
+	// corrupção — a mesma ordem de grandeza do claimTTL do plano B de
+	// CreateExclusive. settleSleep e settleNow são substituíveis nos testes.
 	settleAttempts = 500
 	settleInterval = 20 * time.Millisecond
 	settleSleep    = time.Sleep
+	settleNow      = time.Now
 )
 
+// settleWindow é quanto tempo, contado da última modificação do arquivo, vale
+// esperar que ele estabilize.
+func settleWindow() time.Duration {
+	return time.Duration(settleAttempts) * settleInterval
+}
+
 // readSettled relê path enquanto o conteúdo não for válido para k, até o teto.
+//
+// A espera só faz sentido para um arquivo RECENTE — o que outro processo acabou
+// de publicar. Um arquivo modificado há mais tempo que a janela não é artefato
+// de corrida em andamento: é um resíduo, e o seu conteúdo inválido é
+// definitivo. Esperar 10 s por ele só atrasava o boot (BUG-23). O prazo é
+// contado a partir do mtime: um arquivo antigo devolve na hora, um recém-criado
+// espera o que falta da janela.
 func (r *resolver) readSettled(path string, k identKind) (string, error) {
+	var deadline time.Time // calculado na primeira leitura inválida
 	for i := 0; ; i++ {
 		raw, err := r.readDataPath(path)
 		if err != nil || k.valid(k.normalize(raw)) || i >= settleAttempts {
 			return raw, err
 		}
+		if deadline.IsZero() {
+			deadline = r.settleDeadline(path)
+		}
+		if !settleNow().Before(deadline) {
+			r.logf("%s: %s inválido há mais de %s (desde a última modificação); sem espera de estabilização",
+				k.variable, path, settleWindow())
+			return raw, nil
+		}
 		settleSleep(settleInterval)
 	}
+}
+
+// settleDeadline diz até quando vale esperar path estabilizar: a janela contada
+// a partir da última modificação. Sem Stat (o arquivo sumiu entre a leitura e a
+// inspeção, ou o filesystem falhou), a janela conta a partir de agora — o
+// comportamento anterior, que é o mais cauteloso.
+func (r *resolver) settleDeadline(path string) time.Time {
+	if info, err := r.sys.Stat(path); err == nil {
+		return info.ModTime().Add(settleWindow())
+	}
+	return settleNow().Add(settleWindow())
 }
 
 // persistOrigin diz de onde saiu o valor que persistGenerated mandou adotar.
@@ -450,6 +550,19 @@ func (r *resolver) envField(key string) string {
 
 // ----- DATADIR -----
 
+// hasControlBytes informa se o caminho contém algum caractere de controle:
+// C0 (< 0x20), DEL (0x7f) ou C1 (U+0080 a U+009F, em UTF-8). Bytes que não
+// formam UTF-8 válido não são controle — em Unix um caminho é uma sequência de
+// bytes qualquer — e passam. Não aloca: percorre as runas no lugar.
+func hasControlBytes(s string) bool {
+	for _, c := range s {
+		if unicode.IsControl(c) {
+			return true
+		}
+	}
+	return false
+}
+
 // resolveDataDirPath resolve o CAMINHO do DATADIR (env ou padrão), normaliza
 // com filepath.Clean e exige caminho absoluto. A existência é validada de forma
 // preguiçosa por dataDirUsable/ensureDataDir.
@@ -458,15 +571,6 @@ func (r *resolver) envField(key string) string {
 // diretório de trabalho: com "DATADIR=dados", o mesmo serviço iniciado de outro
 // lugar (um WorkingDirectory diferente no unit do systemd, um chdir da
 // aplicação) leria outro arquivo e viraria outro agente.
-func hasControlBytes(s string) bool {
-	for i := 0; i < len(s); i++ {
-		if s[i] < 0x20 || s[i] == 0x7f {
-			return true
-		}
-	}
-	return false
-}
-
 func (r *resolver) resolveDataDirPath() *failure {
 	dir := r.env("DATADIR")
 	origin := "env"
@@ -587,22 +691,16 @@ func (r *resolver) resolveMachineID() (string, *failure) {
 		r.logf("MACHINE_ID: conteúdo de %s inválido, caindo para o próximo nível", midFile)
 	}
 
-	// Nível 3: arquivo auto-gerido em $DATADIR. Vazio/inválido CAI (regenera).
-	stored, f := r.readDataFile(fileMachineID)
+	// Nível 3: arquivo auto-gerido em $DATADIR. Ausente ou inválido CAI
+	// (regenera); vazio passa antes pela janela de estabilização (BUG-23).
+	stored, state, f := r.readManaged(kindMachineID)
 	if f != nil {
 		return "", f
 	}
-	corrupt := false
-	if stored != "" {
-		if v := normalizeMachineID(stored); validMachineID(v) {
-			r.logf("MACHINE_ID: file %s = %q", filepath.Join(r.dataDir, fileMachineID), v)
-			return v, nil
-		}
-		corrupt = true
-		r.warnf("MACHINE_ID: %s tinha conteúdo inválido (%s) e será substituído "+
-			"(o aviso seguinte diz se foi regenerado ou restaurado de um registro)",
-			filepath.Join(r.dataDir, fileMachineID), describeInvalid(stored))
+	if state == managedValid {
+		return stored, nil
 	}
+	corrupt := state == managedCorrupt
 
 	// Nível 4: gerar a partir de um UUIDv7 (hífens removidos => 32 hex).
 	uuid, err := r.sys.GenerateUUIDv7()
@@ -691,22 +789,16 @@ func (r *resolver) resolveAgentUUID() (string, *failure) {
 		return raw, nil
 	}
 
-	// Nível 2: arquivo auto-gerido. Vazio/inválido CAI (regenera).
-	stored, f := r.readDataFile(fileAgentUUID)
+	// Nível 2: arquivo auto-gerido. Ausente ou inválido CAI (regenera); vazio
+	// passa antes pela janela de estabilização (BUG-23).
+	stored, state, f := r.readManaged(kindAgentUUID)
 	if f != nil {
 		return "", f
 	}
-	corrupt := false
-	if stored != "" {
-		if v := strings.ToLower(stored); validAgentUUID(v) {
-			r.logf("AGENT_UUID: file %s = %q", filepath.Join(r.dataDir, fileAgentUUID), v)
-			return v, nil
-		}
-		corrupt = true
-		r.warnf("AGENT_UUID: %s tinha conteúdo inválido (%s) e será substituído "+
-			"(o aviso seguinte diz se foi regenerado ou restaurado de um registro)",
-			filepath.Join(r.dataDir, fileAgentUUID), describeInvalid(stored))
+	if state == managedValid {
+		return stored, nil
 	}
+	corrupt := state == managedCorrupt
 
 	// Nível 3: gerar UUIDv7 e persistir.
 	uuid, err := r.sys.GenerateUUIDv7()

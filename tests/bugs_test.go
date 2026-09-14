@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -381,7 +382,9 @@ func TestFix_BUG07_DebugFollowsSpec(t *testing.T) {
 			t.Errorf("falta a linha de debug de %s", field)
 			continue
 		}
-		if !strings.Contains(line, value) {
+		// O debug imprime o valor com %q: no Windows as barras invertidas do
+		// caminho saem escapadas, então compara-se com a forma citada.
+		if !strings.Contains(line, strconv.Quote(value)) {
 			t.Errorf("linha de %s não traz o valor final %q: %q", field, value, line)
 		}
 	}

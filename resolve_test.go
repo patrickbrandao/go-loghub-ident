@@ -12,6 +12,10 @@ import (
 )
 
 // fakeSystem é uma implementação em memória de system, usada nos testes.
+//
+// Os caminhos são guardados sempre com "/": a lib monta caminhos com
+// filepath.Join/Clean, que no Windows usam "\", e as chaves dos testes
+// ("/data/agent_uuid") precisam casar em qualquer plataforma.
 type fakeSystem struct {
 	env      map[string]string
 	files    map[string]string // caminho -> conteúdo
@@ -67,6 +71,7 @@ func newFakeSystem() *fakeSystem {
 func (f *fakeSystem) Getenv(key string) string { return f.env[key] }
 
 func (f *fakeSystem) Stat(path string) (os.FileInfo, error) {
+	path = filepath.ToSlash(path)
 	if err := f.statErr[path]; err != nil {
 		return nil, err
 	}
@@ -88,6 +93,7 @@ func (f *fakeSystem) Stat(path string) (os.FileInfo, error) {
 }
 
 func (f *fakeSystem) ReadFile(path string) ([]byte, error) {
+	path = filepath.ToSlash(path)
 	if err := f.readErr[path]; err != nil {
 		return nil, err
 	}
@@ -107,6 +113,7 @@ func (f *fakeSystem) ReadFile(path string) ([]byte, error) {
 }
 
 func (f *fakeSystem) ReadFileNoFollow(path string) ([]byte, error) {
+	path = filepath.ToSlash(path)
 	if f.symlinks[path] != "" {
 		return nil, fmt.Errorf("%w: %s é um link simbólico", errInvalidSource, path)
 	}
@@ -115,6 +122,7 @@ func (f *fakeSystem) ReadFileNoFollow(path string) ([]byte, error) {
 
 // CreateExclusive só grava se o caminho ainda não existir, como o O_EXCL real.
 func (f *fakeSystem) CreateExclusive(path string, data []byte, perm os.FileMode) (bool, error) {
+	path = filepath.ToSlash(path)
 	if err := f.writeErr[path]; err != nil {
 		return false, err
 	}
@@ -129,6 +137,7 @@ func (f *fakeSystem) CreateExclusive(path string, data []byte, perm os.FileMode)
 }
 
 func (f *fakeSystem) ReplaceFile(path string, data []byte, perm os.FileMode) error {
+	path = filepath.ToSlash(path)
 	if err := f.writeErr[path]; err != nil {
 		return err
 	}
@@ -145,6 +154,7 @@ func (f *fakeSystem) store(path string, data []byte, perm os.FileMode) {
 }
 
 func (f *fakeSystem) Remove(path string) error {
+	path = filepath.ToSlash(path)
 	if _, ok := f.files[path]; !ok {
 		return &fs.PathError{Op: "remove", Path: path, Err: fs.ErrNotExist}
 	}
@@ -287,7 +297,7 @@ func TestResolve_DataDir_CustomPath(t *testing.T) {
 	if f != nil {
 		t.Fatalf("falha inesperada: %+v", f)
 	}
-	if id.dataDir != "/var/lib/app" {
+	if id.dataDir != filepath.Clean("/var/lib/app") {
 		t.Errorf("dataDir = %q", id.dataDir)
 	}
 	if _, ok := sys.written["/var/lib/app/agent_uuid"]; !ok {
@@ -645,7 +655,7 @@ func TestApplyAndGetters(t *testing.T) {
 		hostname:  "node01",
 		workspace: "prod",
 	})
-	if DataDir() != "/data" || MachineID() == "" || AgentName() != "svc" ||
+	if DataDir() != filepath.Clean("/data") || MachineID() == "" || AgentName() != "svc" ||
 		AgentUUID() == "" || Hostname() != "node01" || Workspace() != "prod" {
 		t.Errorf("getters não refletiram apply()")
 	}

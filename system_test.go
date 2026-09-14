@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -170,7 +171,9 @@ func TestCreateExclusive(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got := info.Mode().Perm(); got != filePerm {
+			// No Windows os bits de permissão Unix não existem: Perm() reflete só o
+			// atributo somente-leitura (0666 ou 0444).
+			if got := info.Mode().Perm(); runtime.GOOS != "windows" && got != filePerm {
 				t.Errorf("permissão = %04o (esperava %04o)", got, filePerm)
 			}
 
@@ -197,6 +200,9 @@ func TestCreateExclusive(t *testing.T) {
 }
 
 func TestCreateExclusive_WriteFailureIsReported(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows: o atributo somente-leitura do diretório não impede criar arquivos nele")
+	}
 	if os.Geteuid() == 0 {
 		t.Skip("rodando como root: os bits de permissão não bloqueiam a escrita")
 	}
@@ -239,7 +245,9 @@ func TestReplaceFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A permissão é corrigida mesmo quando o arquivo já existia com outra.
-	if got := info.Mode().Perm(); got != filePerm {
+	// No Windows os bits de permissão Unix não existem: Perm() reflete só o
+	// atributo somente-leitura (0666 ou 0444).
+	if got := info.Mode().Perm(); runtime.GOOS != "windows" && got != filePerm {
 		t.Errorf("permissão = %04o (esperava %04o)", got, filePerm)
 	}
 	assertNoTempLeft(t, dir)

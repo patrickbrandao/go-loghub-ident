@@ -16,8 +16,12 @@ Esta skill orienta desenvolvedores e agentes de IA a implementar, configurar e o
 
 ## 1. O que é a biblioteca e por que usá-la?
 
-A biblioteca resolve seis atributos fundamentais de identidade para qualquer processo ou microsserviço:
-- **`DataDir()`**: Diretório raiz de dados persistentes do processo (padrão `/data`).
+O objetivo principal da biblioteca é dar a qualquer processo ou microsserviço, de forma estável entre reinícios:
+- uma **identidade única** — *quem* é este agente: `AgentUUID()`, `AgentName()` e `Hostname()`;
+- uma **localização virtual** — *onde* ele está: `MachineID()` e `Workspace()`.
+
+Os seis getters, incluindo o de suporte `DataDir()`:
+- **`DataDir()`**: Diretório raiz de dados persistentes do processo (padrão `/data`). Não é identidade: é onde `machine_id` e `agent_uuid` gerados são gravados.
 - **`MachineID()`**: Identificador de 32 hexadecimais do nó/máquina física ou virtual.
 - **`AgentName()`**: Nome do serviço no ecossistema (máx. 64 caracteres).
 - **`AgentUUID()`**: UUIDv7 temporalmente ordenável único da instância.
@@ -117,7 +121,7 @@ flowchart TD
 | `AGENT_UUID` | `AgentUUID()` | `$DATADIR/agent_uuid` ou gerado via UUIDv7 | UUIDv7 canônico com hífens RFC 9562 (`^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`). |
 | `HOSTNAME` | `Hostname()` | Chamada `os.Hostname()` | Padrão RFC 1123: máx. 253 chars, rótulos de 1 a 63 chars sem hífens nas extremidades. |
 | `WORKSPACE` | `Workspace()` | `$DATADIR/workspace` ou `"default"` | 1 a 64 caracteres em `^[a-z0-9.-]+$`. **Rejeita `.` e `..` e não aceita `_`**. |
-| `LOGHUB_IDENT_DEBUG` | Diagnóstico | Vazio (desativado) | Qualquer valor não-vazio (`"1"`) ativa a emissão de 6 linhas de diagnóstico em `stderr`. |
+| `LOGHUB_IDENT_DEBUG` | Diagnóstico | Vazio (desativado) | Qualquer valor não-vazio (`"1"`) ativa a emissão de uma linha de diagnóstico por campo (mais as de fontes ignoradas) em `stderr`. |
 
 ---
 
@@ -132,16 +136,18 @@ flowchart TD
 
 ### Regras Críticas de Operação de Volumes:
 1. **Gravação Atômica e Durável:** As gravações usam arquivos temporários com `fchmod(0644)`, `fsync` do arquivo e `fsync` do diretório pai. Quedas de energia não deixam arquivos corrompidos de 0 bytes.
-2. **Convergência entre Sidecars:** Containers que compartilham intencionalmente o mesmo `$DATADIR` (ex.: container de aplicação e sidecar de coleta de logs no mesmo Pod) convergem automaticamente para os mesmos IDs via criação exclusiva (`CreateExclusive`).
+2. **Convergência entre Sidecars:** Containers que compartilham intencionalmente o mesmo `$DATADIR` (ex.: container de aplicação e sidecar de coleta de logs no mesmo Pod) convergem automaticamente para os mesmos IDs via criação exclusiva (`CreateExclusive`). Nessa topologia o `AgentUUID` identifica a **instância** (o Pod); a distinção entre app e sidecar vem do `AgentName`. Se cada container precisar do seu próprio `AgentUUID`, defina `AGENT_UUID` na env de cada um ou dê a cada um o seu `DATADIR`.
 3. **Isolamento entre Réplicas:** **NUNCA compartilhe o mesmo volume gravável `$DATADIR` entre Pods ou servidores distintos.** Isso causaria colisão de `machine_id` e `agent_uuid`, gerando duplicações no servidor Loghub.
 4. **Proteção contra Symlinks:** A biblioteca recusa links simbólicos dentro de `$DATADIR` (`ReadFileNoFollow`) com código 100 para impedir exfiltração de arquivos do host.
+5. **Arquivo de identidade vazio:** um `machine_id` ou `agent_uuid` vazio (touch de provisionamento, cópia interrompida) é tratado como corrompido: aviso em `stderr` e regeneração. Se o arquivo tiver sido modificado há menos de 10 s, a biblioteca espera o que falta dessa janela antes de decidir, porque pode ser o que um irmão acabou de publicar num volume de rede; um arquivo vazio antigo é regenerado na hora.
+6. **Volume durável:** a identidade só é estável se o volume sobreviver à recriação do container ou do Pod: volume nomeado no Docker (`docker run -v loghub-ident:/data ...`) e PVC dedicado (ou `volumeClaimTemplates`) no Kubernetes. `emptyDir` e volumes anônimos são apagados na recriação, e a biblioteca gera identidades novas sem aviso, porque não há arquivo corrompido, apenas ausente.
 
 ---
 
 ## 6. Observabilidade e Monitoramento
 
 ### 6.1. Depuração com `LOGHUB_IDENT_DEBUG=1`
-Ao ativar a variável de depuração, o processo emite exatamente 6 linhas em `stderr` antes de qualquer execução ou falha:
+Ao ativar a variável de depuração, o processo emite uma linha por campo em `stderr` (seis), precedidas, quando houver, por linhas de diagnóstico sobre fontes ignoradas, tudo antes de qualquer execução ou falha:
 ```text
 lib-loghub-ident: debug: DATADIR: env = "/data"
 lib-loghub-ident: debug: MACHINE_ID: file /etc/machine-id = "0123456789abcdef0123456789abcdef"
@@ -152,10 +158,12 @@ lib-loghub-ident: debug: WORKSPACE: fallback = "default"
 ```
 
 ### 6.2. Alarme Operacional Obrigatório (`lib-loghub-ident: aviso:`)
-Se um arquivo persistido em `$DATADIR` for encontrado com conteúdo corrompido, a biblioteca regenera a identidade e emite um aviso compulsório em `stderr`:
+Se um arquivo persistido em `$DATADIR` for encontrado com conteúdo corrompido (ou vazio), a biblioteca regenera a identidade e emite dois avisos compulsórios em `stderr`:
 ```text
-lib-loghub-ident: aviso: MACHINE_ID: /data/machine_id tinha conteúdo inválido (16 bytes, hash ...) e será REGERADO; a identidade desta máquina muda a partir de agora
+lib-loghub-ident: aviso: MACHINE_ID: /data/machine_id tinha conteúdo inválido (16 bytes, hash 8f3a1b0c9e7d4a2f) e será substituído (o aviso seguinte diz se foi regenerado ou restaurado de um registro)
+lib-loghub-ident: aviso: MACHINE_ID: /data/machine_id foi REGERADO com valor novo (32 bytes, hash 5d41402abc4b2a76); a identidade desta máquina muda a partir de agora
 ```
+Quando um processo irmão já regenerou (registro `.machine_id.regen`), a segunda linha diz `foi RESTAURADO a partir do registro de regeneração` e a identidade anterior é mantida.
 > **Ação Recomendada:** Configure alertas no seu agregador de logs (ex.: Datadog, CloudWatch, Loki) para a string `lib-loghub-ident: aviso:`. Essa linha indica que o nó trocou de identidade física, o que pode impactar faturamento de licenças por host e continuidade de séries temporais.
 
 ---
@@ -198,13 +206,15 @@ RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /out/app .
 
 FROM gcr.io/distroless/static-debian12
 COPY --from=build /out/app /app
+# Monte um volume NOMEADO (docker run -v loghub-ident:/data ...): o volume
+# anônimo que VOLUME cria é descartado ao recriar o container.
 VOLUME ["/data"]
 ENV WORKSPACE=production
 ENTRYPOINT ["/app"]
 ```
 
 ### 8.2. Kubernetes Pod (Compartilhamento entre Aplicação e Sidecar)
-Veja o manifesto completo em [`examples/kubernetes/pod.yaml`](./examples/kubernetes/pod.yaml).
+Veja o manifesto completo em [`examples/kubernetes/pod.yaml`](./examples/kubernetes/pod.yaml). O volume é um PVC dedicado: um `emptyDir` seria apagado na recriação do Pod e a identidade seria gerada de novo. App e sidecar convergem para o mesmo `MachineID` e o mesmo `AgentUUID` (a instância é o Pod); a distinção entre eles vem do `AgentName`.
 
 ---
 

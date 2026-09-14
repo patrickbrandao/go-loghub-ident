@@ -19,7 +19,7 @@ Adicione a variável de ambiente no deployment ou container:
 ```bash
 LOGHUB_IDENT_DEBUG=1
 ```
-Reinicie o serviço e verifique os logs. As 6 linhas de diagnóstico mostrarão exatamente qual fonte alimentou cada campo até o momento da falha:
+Reinicie o serviço e verifique os logs. As linhas de diagnóstico (uma por campo, mais as de fontes ignoradas) mostrarão exatamente qual fonte alimentou cada campo até o momento da falha:
 ```text
 lib-loghub-ident: debug: DATADIR: env = "/data"
 lib-loghub-ident: debug: MACHINE_ID: env = "0123456789abcdef0123456789abcdef"
@@ -63,8 +63,8 @@ lib-loghub-ident: debug: AGENT_NAME: fallback argv[0] = "meu-servico"
   - Libere espaço no volume.
   - Verifique o `securityContext` no Kubernetes (`fsGroup` e permissões do volume montado).
 
-### Cenário 5: Erro 112 (`Initialize() já foi chamado`)
-- **Mensagem típica:** `lib-loghub-ident: geral: Initialize() já foi chamado`.
+### Cenário 5: Erro 112 (`Initialize() chamado mais de uma vez`)
+- **Mensagem típica:** `lib-loghub-ident: geral: Initialize() chamado mais de uma vez`.
 - **Causa:** O código da aplicação invocou `lhident.Initialize()` duas vezes (ex.: na função `init()` e novamente no `main()`, ou dentro de um handler de reinicialização).
 - **Solução:**
   - Remova a invocação redundante. `Initialize()` deve ser chamada estritamente uma única vez no início de `main()`.
@@ -75,11 +75,14 @@ lib-loghub-ident: debug: AGENT_NAME: fallback argv[0] = "meu-servico"
 
 Aviso típico no log do coletor:
 ```text
-lib-loghub-ident: aviso: MACHINE_ID: /data/machine_id tinha conteúdo inválido (16 bytes, hash 8f3a1b0c9e7d4a2f) e será REGERADO; a identidade desta máquina muda a partir de agora
+lib-loghub-ident: aviso: MACHINE_ID: /data/machine_id tinha conteúdo inválido (16 bytes, hash 8f3a1b0c9e7d4a2f) e será substituído (o aviso seguinte diz se foi regenerado ou restaurado de um registro)
+lib-loghub-ident: aviso: MACHINE_ID: /data/machine_id foi REGERADO com valor novo (32 bytes, hash 5d41402abc4b2a76); a identidade desta máquina muda a partir de agora
 ```
 
 ### O que significa?
-O arquivo preexistente no volume estava corrompido (tamanho truncado ou lixo aleatório). A biblioteca descartou os dados inválidos para permitir que o serviço inicializasse com uma nova identidade válida.
+O arquivo preexistente no volume estava corrompido (tamanho truncado, lixo aleatório ou 0 bytes). A biblioteca descartou os dados inválidos para permitir que o serviço inicializasse com uma nova identidade válida. Se a segunda linha disser `foi RESTAURADO a partir do registro de regeneração`, um processo irmão já tinha regenerado e a identidade anterior foi mantida.
+
+Um arquivo **vazio** (0 bytes) recebe o mesmo tratamento, com uma diferença: se tiver sido modificado há menos de 10 s, a biblioteca espera o que falta dessa janela antes de decidir, porque pode ser o que um processo irmão acabou de publicar num volume de rede; um arquivo vazio antigo é regenerado na hora.
 
 ### Como Auditar:
 1. O hash informado é um hash **FNV-1a 64-bit** dos bytes corrompidos. Isso permite comparar com backups do volume sem expor segredos em texto claro no log.
@@ -91,7 +94,8 @@ O arquivo preexistente no volume estava corrompido (tamanho truncado ou lixo ale
 ## 4. Concorrência e Compartilhamento de Volumes
 
 ### Containers Principais e Sidecars no Mesmo Pod
-- **Comportamento Esperado:** Ambos montam o mesmo volume `/data`. O primeiro a iniciar cria a identidade com `CreateExclusive`; o segundo adota automaticamente o valor do primeiro via `readSettled`. Ambos reportam exatamente o mesmo `MachineID()` e `AgentUUID()`.
+- **Comportamento Esperado:** Ambos montam o mesmo volume `/data`. O primeiro a iniciar cria a identidade com `CreateExclusive`; o segundo adota automaticamente o valor do primeiro via `readSettled`. Ambos reportam exatamente o mesmo `MachineID()` e `AgentUUID()`: nessa topologia o `AgentUUID` identifica a instância (o Pod) e a distinção entre app e sidecar vem do `AgentName()`. Se cada container precisar do seu próprio `AgentUUID`, defina `AGENT_UUID` na env de cada um ou dê a cada um o seu `DATADIR`.
+- **Volume durável:** use um PVC dedicado ao Pod (ou `volumeClaimTemplates`). Um `emptyDir` é apagado na recriação do Pod e a identidade é gerada de novo, sem aviso.
 
 ### Réplicas Independentes (ReplicaSet / Deployment)
 - **Atenção:** **Cada Pod do ReplicaSet DEVE ter seu próprio volume dedicado** (usando `volumeClaimTemplates` em um `StatefulSet` ou diretórios segregados por Pod: `/data/pod-0`, `/data/pod-1`).

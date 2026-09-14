@@ -21,14 +21,24 @@
 
 ---
 
-## 2. Os Seis Campos Canônicos de Identidade
+## 2. Objetivo Principal, Modelo Conceitual e os Seis Campos
 
-A biblioteca tem como propósito único resolver, fixar e expor seis atributos fundamentais que identificam um processo no ecossistema Loghub:
+O objetivo principal da biblioteca é prover ao software que a utiliza uma **identidade única** e uma **localização virtual**, ambas estáveis entre reinícios:
 
-1. **`DataDir` (`string`):** Caminho absoluto no filesystem local para armazenamento persistente de dados e chaves da aplicação e da própria biblioteca (padrão `/data`).
+| Grupo | Pergunta que responde | Campos | Estabilidade |
+| :--- | :--- | :--- | :--- |
+| **Identidade única** | *Quem* é este agente? | `AgentUUID` (UUIDv7 gerado e persistido), `AgentName`, `Hostname` | `AgentUUID` é estável por volume `$DATADIR`; `AgentName` e `Hostname` são determinísticos do ambiente |
+| **Localização virtual** | *Onde* ele está? | `MachineID` (nó físico ou virtual), `Workspace` (tenant lógico) | `MachineID` é estável por host (`/etc/machine-id`) ou por volume, quando gerado; `Workspace` tem fallback `"default"` |
+| Suporte | Onde persistir o que foi gerado? | `DataDir` | Não é identidade nem localização: é infraestrutura de persistência |
+
+Toda a maquinaria de persistência e concorrência de [`04-PERSISTENCE-CONCURRENCY-AND-SAFETY.md`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/docs/04-PERSISTENCE-CONCURRENCY-AND-SAFETY.md) existe para um único fim: manter `AgentUUID` e `MachineID` iguais entre reinícios e entre processos irmãos.
+
+Os seis campos resolvidos são:
+
+1. **`DataDir` (`string`):** Caminho absoluto no filesystem local para armazenamento persistente de dados e chaves da aplicação e da própria biblioteca (padrão `/data`). É campo de suporte, não de identidade.
 2. **`MachineID` (`string`):** Identificador de 32 caracteres hexadecimais em lowercase (sem hífens), representativo da máquina física, nó virtual ou instância de computação.
 3. **`AgentName` (`string`):** Nome lógico do serviço ou microsserviço (máx. 64 caracteres, seguro contra path traversal).
-4. **`AgentUUID` (`string`):** UUIDv7 canônico (36 caracteres com hífens, versão 7, variante RFC 9562), ordenável temporalmente, identificando a instância específica do agente.
+4. **`AgentUUID` (`string`):** UUIDv7 canônico (36 caracteres com hífens, versão 7, variante RFC 9562), ordenável temporalmente, identificando a instância específica do agente. Na topologia de sidecar (dois containers no mesmo `$DATADIR`) identifica a instância — o Pod — e a distinção entre os processos vem de `AgentName` (ver `04` §6.4).
 5. **`Hostname` (`string`):** Nome de host do sistema, validado segundo os padrões estritos da RFC 1123 (máx. 253 caracteres, rótulos alfanuméricos de 1 a 63 chars sem hífens nas extremidades).
 6. **`Workspace` (`string`):** Identificador do tenant ou ambiente lógico ao qual o agente pertence (máx. 64 caracteres, padrão `"default"`).
 
@@ -87,7 +97,7 @@ var initialized atomic.Bool
 
 func Initialize() {
     if !initialized.CompareAndSwap(false, true) {
-        fmt.Fprintf(os.Stderr, "lib-loghub-ident: geral: Initialize() já foi chamado\n")
+        fmt.Fprintf(os.Stderr, "lib-loghub-ident: geral: Initialize() chamado mais de uma vez\n")
         os.Exit(112)
     }
     // ... resolução dos campos ...

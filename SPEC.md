@@ -99,7 +99,10 @@ permissão aplicada explicitamente (`fchmod`), sem interferência do umask:
   **relê o arquivo e adota o valor do vencedor**, de modo que todos convergem
   para uma identidade única. O processo perdedor aguarda a estabilização do arquivo
   por até 10 s (500 tentativas de 20 ms), prevenindo declarações falsas de corrupção
-  em volumes de rede com latência de atributos (NFS). Em sistemas de arquivos sem suporte a hard links
+  em volumes de rede com latência de atributos (NFS). A janela é contada a partir
+  da última modificação do arquivo: um arquivo vazio ou inválido modificado há
+  mais de 10 s não é artefato de corrida e é declarado corrompido na hora (§5,
+  BUG-23). Em sistemas de arquivos sem suporte a hard links
   (Plano B), a exclusão mútua utiliza um arquivo de trava `.claim` com TTL
   (10 s), verificação de timestamp e publicação final atômica via `os.Rename`,
   garantindo que leitores concorrentes nunca observem um arquivo vazio de 0 bytes.
@@ -170,9 +173,13 @@ arquivo — as duas fontes do mesmo campo não podem ter saneamentos diferentes.
   - Fonte **ausente ou vazia** após trim → cai para a próxima fonte.
   - Fonte de env **presente mas inválida** → **aborta** com o código do campo.
   - Exceção (arquivos auto-geridos pela lib — `machine_id`, `agent_uuid` em
-    `$DATADIR`): conteúdo vazio **ou** inválido → trata como ausente e
+    `$DATADIR`): conteúdo inválido → trata como **corrompido** e
     **regenera + regrava**, com aviso obrigatório (§12) e arbitragem entre
-    processos concorrentes (§4).
+    processos concorrentes (§4). Conteúdo **vazio** também é corrompido, mas
+    passa antes pela janela de estabilização (§4): se o arquivo foi modificado
+    há menos de 10 s, pode ser o que um irmão acabou de publicar num volume de
+    rede e a lib espera o que falta da janela; se for mais antigo, não há
+    espera. Um arquivo **ausente** cai para a geração em silêncio.
 
 Nenhum valor final pode ser vazio ou reprovado pela validação.
 
@@ -189,7 +196,8 @@ de componentes de caminho relativos e a estrutura de rótulos da RFC 1123.
 - Env: `DATADIR`. Padrão: `/data`.
 - **Caminho absoluto obrigatório e livre de caracteres de controle.** O valor é
   normalizado com `filepath.Clean`, precisa ser absoluto e não pode conter
-  caracteres de controle Unicode ou bytes `< 0x20` / `0x7f` (ex.: `\n`, `\r`, `NUL`);
+  caracteres de controle Unicode — C0 (`< 0x20`), DEL (`0x7f`) e C1 (U+0080 a
+  U+009F) — como `\n`, `\r` ou `NUL`;
   caminho relativo ou com controle aborta com **código 100**. Um
   `DATADIR=dados` faria a identidade depender do diretório de trabalho: o mesmo
   serviço iniciado de outro lugar (um `WorkingDirectory` diferente no unit do
@@ -240,8 +248,9 @@ Cadeia de resolução:
      silêncio esconde o erro.
    - O `/etc/machine-id` **padrão** (env ausente) continua best-effort: ilegível,
      inexistente, inválido ou inutilizável, apenas cai para o próximo nível.
-3. Arquivo `$DATADIR/machine_id` (auto-gerido). Vazio/inválido → cai, com
-   **aviso obrigatório em stderr** (ver §12).
+3. Arquivo `$DATADIR/machine_id` (auto-gerido). Inválido → cai, com
+   **aviso obrigatório em stderr** (ver §12); vazio → idem, depois da janela de
+   estabilização quando o arquivo for recente (§5); ausente → cai em silêncio.
 4. **Gerar:** UUIDv7 (`Level1`) com hífens removidos → 32 hex; gravar em
    `$DATADIR/machine_id` (perm 0644, garantida, durável e atômica — ver §4).
    - Falha de **geração** → **código 114**.
@@ -288,8 +297,9 @@ Sanear = só trim + lowercase (NÃO remove `-`).
 
 Cadeia:
 1. Env `AGENT_UUID` — presente e inválida → aborta **107**. (Nunca grava arquivo.)
-2. Arquivo `$DATADIR/agent_uuid` (auto-gerido) — vazio/inválido → trata como
-   ausente e regenera.
+2. Arquivo `$DATADIR/agent_uuid` (auto-gerido) — inválido → trata como
+   corrompido e regenera, com aviso; vazio → idem, depois da janela de
+   estabilização quando o arquivo for recente (§5); ausente → gera em silêncio.
 3. **Gerar:** `uuidv7.GenerateString(uuidv7.Level1)`; gravar em
    `$DATADIR/agent_uuid` (perm 0644, garantida, durável e atômica — ver §4).
    - Falha de geração → **105**; falha de gravação → **106**; valor gerado que
@@ -356,6 +366,13 @@ Cadeia:
   2. **Adoção de regeneração prévia:** quando uma réplica irmã descobre que a
      identidade corrompida já foi regerada por outro processo concorrente
      (arbitrado pelo registro `.regen`) e adota essa regeneração.
+
+  São sempre duas linhas: `<VAR>: <arquivo> tinha conteúdo inválido (<n> bytes,
+  hash <fnv>) e será substituído (...)` seguida de `<VAR>: <arquivo> foi REGERADO
+  com valor novo (...)` (caso 1) ou `<VAR>: <arquivo> foi RESTAURADO a partir do
+  registro de regeneração <.regen> (...)` (caso 2). Quem perde a corrida de
+  criação para um vencedor que gravou lixo vê `existe com conteúdo inválido
+  (...)` na primeira linha. Um arquivo vazio recebe o mesmo tratamento (`0 bytes`).
 
   Avisos de descarte protegem segredos potencialmente contidos no arquivo lido,
   reportando apenas tamanho e hash sanitizado em vez do conteúdo em claro.

@@ -11,8 +11,9 @@ reais de `osSystem`.
 | `helper_test.go`    | `TestMain`, o harness de subprocesso e os utilitários de ambiente        |
 | `api_test.go`       | caminho feliz, precedência env → arquivo → fallback, persistência        |
 | `exitcodes_test.go` | a tabela de códigos de saída da SPEC §13, ponta a ponta                  |
-| `bugs_test.go`      | testes de regressão permanentes (BUG-01 a BUG-16)                        |
-| `bugs2_test.go`     | testes de regressão de persistência durável e atômica (BUG-17 a BUG-20)  |
+| `bugs_test.go`      | testes de regressão permanentes (BUG-01 a BUG-16 e PERF-01)              |
+| `bugs2_test.go`     | testes de regressão de persistência durável (BUG-17 e BUG-19)            |
+| `bugs3_test.go`     | arquivo de identidade vazio e janela de estabilização (BUG-23, BUG-20)   |
 | `examples_test.go`  | compila e executa os programas de `../skill/examples/` (feliz, volume, falha) |
 | `bench_test.go`     | custo dos getters, da validação (regex vs. manual) e de um boot completo |
 

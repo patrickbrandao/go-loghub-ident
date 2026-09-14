@@ -81,7 +81,7 @@ flowchart TD
      - Inacessível por erro de I/O/permissão ou inutilizável (FIFO, socket, dispositivo, diretório ou tamanho > 4 KiB): aborta com **código 100** e variável `MACHINE_ID_FILE` (**BUG-01**, **BUG-15**, **BUG-19**).
    - Se for o `/etc/machine-id` padrão: leitura best-effort. Caso inexistente, ilegível ou com conteúdo inválido, segue silenciosamente para o Nível 3.
 3. **Nível 3 (Arquivo `$DATADIR/machine_id`):**
-   - Lido via `ReadFileNoFollow`. Se contiver dados inválidos, emite aviso compulsório em `stderr` com tamanho e hash FNV-1a (**BUG-03**) e cai para o Nível 4.
+   - Lido via `ReadFileNoFollow` (`readManaged`). Ausente: segue em silêncio para o Nível 4. Presente com dados inválidos: emite aviso compulsório em `stderr` com tamanho e hash FNV-1a (**BUG-03**) e cai para o Nível 4 pelo protocolo de regeneração. Presente e **vazio**: passa antes pela janela de estabilização de `readSettled` ([`04-PERSISTENCE-CONCURRENCY-AND-SAFETY.md`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/docs/04-PERSISTENCE-CONCURRENCY-AND-SAFETY.md) §4) — um arquivo antigo é declarado corrompido na hora, um recém-modificado espera o que falta da janela (**BUG-20**, **BUG-23**).
 4. **Nível 4 (Geração Local):**
    - Invoca `sys.GenerateUUIDv7()`.
    - Remove os hífens gerando 32 caracteres hexadecimais.
@@ -120,8 +120,10 @@ flowchart TD
    - Não remove hífens. Aplica apenas trim e lowercase.
    - Se presente e inválida: aborta com **código 107**.
 2. **Nível 2 (Arquivo `$DATADIR/agent_uuid`):**
-   - Lido via `ReadFileNoFollow`.
-   - Se inexistente ou com formato inválido: emite aviso operacional compulsório em `stderr` e segue para o Nível 3.
+   - Lido via `ReadFileNoFollow` (`readManaged`).
+   - Ausente: segue em silêncio para o Nível 3.
+   - Presente com formato inválido: emite aviso operacional compulsório em `stderr` e segue para o Nível 3 pelo protocolo de regeneração.
+   - Presente e **vazio**: passa antes pela janela de estabilização de `readSettled` — um arquivo antigo é declarado corrompido na hora, um recém-modificado espera o que falta da janela (**BUG-20**, **BUG-23**).
 3. **Nível 3 (Geração Local):**
    - Invoca `sys.GenerateUUIDv7()`.
    - Valida conformidade estrita com a RFC 9562 (`validAgentUUID`).

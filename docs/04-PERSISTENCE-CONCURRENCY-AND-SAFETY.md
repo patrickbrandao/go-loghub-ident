@@ -30,7 +30,7 @@ $DATADIR/
 
 Para impedir corrupção por queda abrupta de energia (*crash*, `kill -9` ou reinício de host), a biblioteca implementa `writeTemp` com sincronização completa de metadados e blocos (**`BUG-17`**):
 
-1. **Criação do Arquivo Temporário:** Cria um arquivo temporário no **mesmo diretório** do destino (`os.CreateTemp(dir, ".ident-tmp-*.tmp")`), assegurando que temporário e destino residam no mesmo filesystem.
+1. **Criação do Arquivo Temporário:** Cria um arquivo temporário no **mesmo diretório** do destino (`os.CreateTemp(dir, "."+<arquivo>+".tmp")`, ou seja, `.machine_id.tmp<aleatório>`), assegurando que temporário e destino residam no mesmo filesystem.
 2. **Escrita do Conteúdo:** Escreve os bytes brutos da identidade sanitizada.
 3. **Imposição de Permissões:** Executa `f.Chmod(perm)` diretamente sobre o descritor aberto.
 4. **Fsync do Arquivo:** Invoca `f.Sync()` antes de fechar o arquivo, descarregando as páginas de cache do kernel para o disco físico.
@@ -62,7 +62,7 @@ flowchart TD
 Em filesystems onde hard links não são suportados (como montagens CIFS, certos compartilhamentos virtuais ou Windows):
 1. A biblioteca detecta o erro de suporte a hard link e comuta para `createExclusiveDirect`.
 2. Tenta criar um arquivo de trava exclusivo: `$DATADIR/.<arquivo>.claim`.
-3. O `.claim` contém o PID do processo e um timestamp de criação.
+3. O `.claim` é criado vazio, com `O_EXCL`: o que importa é a sua existência e o seu `ModTime`.
 4. **Proteção contra Deadlock (TTL de 10s):** Se o arquivo `.claim` já existir, a biblioteca verifica seu tempo de modificação (`ModTime`). Se for mais antigo que 10 segundos (sinal de processo morto antes de concluir), a trava expirada é removida e a criação prossegue.
 5. O vencedor publica o arquivo final via `os.Rename(tmp, target)` de forma atômica.
 
@@ -73,11 +73,13 @@ Em filesystems onde hard links não são suportados (como montagens CIFS, certos
 Em volumes de rede (como NFS ou EFS) com latência de atributos e consistência fraca (*close-to-open consistency*), um processo perdedor da corrida pode abrir o arquivo recém-criado pelo vencedor antes que os bytes tenham sido propagados no cache de atributos do cliente NFS, observando um arquivo vazio de 0 bytes (**`BUG-20`**).
 
 Para prevenir declarações falsas de corrupção:
-- A função [`readSettled`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/resolve.go#L290) entra em um loop de espera ativa:
+- A função `readSettled` (`resolve.go`) entra em um loop de espera ativa:
   - **Até 500 tentativas** com intervalo de **20 ms** (tolerância máxima total de **10 segundos**).
   - A cada ciclo, tenta ler o arquivo e valida se o conteúdo é não-vazio e atende ao formato canônico.
   - Se estabilizar com sucesso, devolve o valor validado.
-  - Apenas se esgotar o prazo de 10 segundos sem estabilização é que o arquivo é declarado corrompido.
+  - **A janela é contada a partir do `mtime` do arquivo** (`settleDeadline`, via `system.Stat`), não do início da espera (**`BUG-23`**): um arquivo modificado há mais de 10 s não é artefato de corrida em andamento — é um resíduo (um `touch` de provisionamento, uma cópia interrompida) — e é declarado corrompido na hora, sem esperar; um arquivo recém-modificado espera só o que falta da janela. Se o `Stat` falhar, a janela conta a partir de agora (o comportamento cauteloso).
+  - Só quando a janela se esgota sem estabilização é que o arquivo é declarado corrompido.
+- Quem chama `readSettled`: o perdedor da corrida de criação (§3), quem lê um registro `.regen` (§5) e `readManaged`, a leitura inicial dos arquivos auto-geridos, quando encontra o arquivo **presente mas vazio** — o único caso em que um conteúdo inválido pode ser transitório. Conteúdo inválido não vazio é declarado corrompido de imediato, e arquivo ausente cai para a geração em silêncio.
 
 ---
 
@@ -145,3 +147,5 @@ sequenceDiagram
 ### 6.4. Regra de Isolamento de Volumes
 - **O volume gravável `$DATADIR` NUNCA deve ser compartilhado entre pods, instâncias ou réplicas independentes.**
 - Processos que compartilham o mesmo diretório convergem automaticamente para o mesmo `machine_id` e `agent_uuid`. O compartilhamento é intencional e seguro **apenas** entre containers de um mesmo Pod (ex.: container principal e sidecar).
+- Nessa topologia o `AgentUUID` identifica a **instância** (o Pod), não cada processo: a distinção entre app e sidecar vem do `AgentName`, e a tupla (`AgentUUID`, `AgentName`, `Hostname`) continua única. Se o servidor Loghub chaveia agentes só por `AgentUUID`, dê a cada container o seu próprio `AGENT_UUID` via env, ou um `DATADIR` próprio.
+- A identidade só é estável se o volume sobreviver à recriação do container ou do Pod: volume nomeado no Docker e PVC dedicado (ou `volumeClaimTemplates`) no Kubernetes. Um `emptyDir` ou um volume anônimo é apagado na recriação, e a biblioteca gera identidades novas **sem aviso**, porque não há arquivo corrompido, apenas ausente.

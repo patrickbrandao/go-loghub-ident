@@ -27,7 +27,7 @@ flowchart LR
 2. **Remoção de Byte Order Mark (BOM UTF-8):**
    - Remove o prefixo `0xEF, 0xBB, 0xBF` (`\ufeff`), frequentemente inserido por editores no Windows (como o Notepad) ao editar arquivos de configuração.
 3. **Trim de Espaços e Caracteres de Controle:**
-   - Remove espaços e caracteres de controle Unicode e ASCII nas bordas (`b <= 0x20` e `b == 0x7f`).
+   - Remove espaços e caracteres de controle Unicode nas bordas (`unicode.IsSpace` e `unicode.IsControl`: tudo `<= 0x20`, o `0x7f`, os controles C1 e os espaços Unicode como NBSP).
    - **Crucial:** O trim elimina bytes `NUL` (`0x00`). Um processo interrompido por queda de energia ou *kernel panic* pode deixar blocos nulos parciais no disco. O trim evita que bytes nulos residuais reprovem um valor legítimo.
 4. **Conversão Compulsória para Lowercase:**
    - Todo identificador é convertido para minúsculas (`strings.ToLower`). Nomes em caixa alta ou mista são normalizados automaticamente.
@@ -227,45 +227,37 @@ func validHostname(s string) bool {
 
 ---
 
-### 2.6. Validador de Caminho Ancorado na Raiz (`rootedPath`)
+### 2.6. Validadores de Caminho (`hasControlBytes` e `rootedPath`)
 
-Utilizado para validar `DATADIR` e `MACHINE_ID_FILE` informados pelo usuário:
+Utilizados, nesta ordem, para validar `DATADIR` e `MACHINE_ID_FILE` informados pelo usuário (`resolve.go`):
 
 ```go
-func rootedPath(p string) bool {
-    if p == "" {
-        return false
-    }
-    // Rejeita qualquer caractere de controle ou NUL
-    for i := 0; i < len(p); i++ {
-        if p[i] < 0x20 || p[i] == 0x7f {
-            return false
+// hasControlBytes recusa C0 (< 0x20), DEL (0x7f) e C1 (U+0080 a U+009F).
+// Bytes que não formam UTF-8 válido não são controle e passam: em Unix um
+// caminho é uma sequência de bytes qualquer. Não aloca.
+func hasControlBytes(s string) bool {
+    for _, c := range s {
+        if unicode.IsControl(c) {
+            return true
         }
     }
-
-    // Unix e padrão de caminhos: inicia com '/'
-    if p[0] == '/' {
-        return true
-    }
-
-    // Windows: aceita separador raiz '\' ou unidade 'C:\' / 'C:/'
-    if p[0] == '\\' {
-        return true
-    }
-    if len(p) >= 3 && isLetter(p[0]) && p[1] == ':' && (p[2] == '/' || p[2] == '\\') {
-        return true
-    }
-
     return false
 }
 
-func isLetter(c byte) bool {
-    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+// rootedPath informa se o caminho está ancorado na raiz, ou seja, se NÃO
+// varia com o diretório de trabalho do processo. filepath.IsAbs sozinho não
+// serve: em Windows ele recusa "/data", o próprio DefaultDataDir.
+func rootedPath(p string) bool {
+    if filepath.IsAbs(p) {
+        return true
+    }
+    return p != "" && (p[0] == '/' || p[0] == os.PathSeparator)
 }
 ```
 
+- **Controles (BUG-24):** Qualquer caractere de controle Unicode — C0, DEL ou C1 — aborta com código de saída 100. O predicado é `unicode.IsControl` por runa; espaços (inclusive NBSP) são aceitos, porque caminhos com espaço são legítimos.
 - **Regra de ancoragem:** O caminho DEVE estar ancorado na raiz do filesystem.
 - **Unix:** Inicia obrigatoriamente com `/`.
-- **Windows:** Inicia com `\` (ancorado no drive atual) ou letra de unidade canônica (`C:\` ou `C:/`).
+- **Windows:** Inicia com `\` ou `/` (ancorado na unidade corrente) ou com letra de unidade (`C:\`, aceita por `filepath.IsAbs`).
 - **Recusa:** Caminhos relativos (`data`, `./data`, `../data`, `C:data`) são terminantemente recusados com código de saída 100 (**BUG-10**).
 - **Normalização com `filepath.Clean`:** Caminhos com barras duplas (`/data//`) ou referências relativas normalizáveis (`/data/./dir`) são limpos antes do uso (**BUG-13**).

@@ -1,9 +1,17 @@
 # lib-loghub-ident
 
 Biblioteca Go que **resolve e expõe a identidade de um software** dentro do
-ecossistema Loghub. Preenche seis campos — `DataDir`, `MachineID`, `AgentName`,
-`AgentUUID`, `Hostname`, `Workspace` — a partir de variáveis de ambiente,
-arquivos e fallbacks do sistema. Projetada para microserviços em containers.
+ecossistema Loghub. O objetivo principal é dar ao software que a utiliza duas
+coisas, estáveis entre reinícios:
+
+- uma **identidade única** — *quem* é este agente: `AgentUUID` (UUIDv7 gerado e
+  persistido), `AgentName` e `Hostname`;
+- uma **localização virtual** — *onde* ele está: `MachineID` (nó físico ou
+  virtual) e `Workspace` (tenant lógico).
+
+O sexto campo, `DataDir`, é suporte: o diretório onde as identidades geradas são
+persistidas, não uma identidade. Todos vêm de variáveis de ambiente, arquivos e
+fallbacks do sistema. Projetada para microserviços em containers.
 
 - **Leve e rápida:** após `Initialize`, cada getter é apenas a leitura de uma
   variável de pacote — sem locks, adequado a centenas de threads chamando
@@ -163,6 +171,11 @@ valem as regras que uma classe não expressa:
   que só aparecem se uma identidade corrompida tiver sido substituída, e que a
   biblioteca preserva de propósito: apagá-los devolveria o nome à disputa. Um
   registro obsoleto é removido sozinho quando a identidade é criada do zero.
+- Um arquivo de identidade **vazio** (um `touch` de provisionamento, uma cópia
+  interrompida) não é "ausente": se for antigo, é tratado como corrompido na
+  hora — aviso e regeneração, sem espera; se tiver sido modificado há menos de
+  10 s, pode ser o que um processo irmão acabou de publicar num volume de rede,
+  e a biblioteca espera o que falta dessa janela antes de decidir.
 - `$DATADIR` precisa ser um **caminho absoluto**; um caminho relativo aborta com
   100. Do contrário a identidade dependeria do diretório de trabalho do processo.
 - A biblioteca **não cria** o `DATADIR`; o container/orquestrador deve montar o
@@ -173,7 +186,8 @@ valem as regras que uma classe não expressa:
   persistir (`machine_id`, `agent_uuid`). Erros de permissão ou I/O ao verificar
   ou ler o diretório abortam com código 100.
 - **Segurança e symlinks:** arquivos de identidade dentro de `$DATADIR` são lidos
-  sem seguir links simbólicos (`O_NOFOLLOW`). Um link simbólico é recusado,
+  sem seguir links simbólicos (`Lstat` antes de abrir, `O_NOFOLLOW` no `open` em
+  Linux, macOS e BSDs, e `os.SameFile` depois). Um link simbólico é recusado,
   impedindo exfiltração de arquivos sensíveis do host ou container. Além disso,
   avisos de erro nunca expõem o conteúdo bruto de arquivos inválidos.
 - **Atenção ao compartilhamento de volume:** réplicas ou containers independentes
@@ -182,6 +196,15 @@ valem as regras que uma classe não expressa:
   (`machine_id` e `agent_uuid`), gerando colisão de nós no servidor Loghub. O
   compartilhamento de volume gravável só é aceitável entre processos do mesmo nó
   (ex.: sidecars de um mesmo pod) que intencionalmente compartilham a identidade.
+  Nessa topologia o `AgentUUID` identifica a **instância** (o pod), e a distinção
+  entre os processos vem do `AgentName`; se cada container precisar de um
+  `AgentUUID` próprio, defina `AGENT_UUID` na env de cada um ou dê a cada um o
+  seu `DATADIR`.
+- A identidade só é estável se o volume sobreviver à recriação do container ou
+  do pod: volume **nomeado** no Docker (`-v loghub-ident:/data`) e PVC dedicado
+  no Kubernetes. Um volume anônimo ou um `emptyDir` é apagado na recriação, e a
+  biblioteca gera identidades novas sem aviso — não há arquivo corrompido,
+  apenas ausente.
 
 ## Diagnóstico
 
@@ -210,8 +233,14 @@ que **descarta uma identidade persistida** — um `$DATADIR/machine_id` ou
 substituir:
 
 ```
-lib-loghub-ident: aviso: MACHINE_ID: /data/machine_id tinha conteúdo inválido (16 bytes, hash ...) e será REGERADO; a identidade desta máquina muda a partir de agora
+lib-loghub-ident: aviso: MACHINE_ID: /data/machine_id tinha conteúdo inválido (16 bytes, hash 8f3a1b0c9e7d4a2f) e será substituído (o aviso seguinte diz se foi regenerado ou restaurado de um registro)
+lib-loghub-ident: aviso: MACHINE_ID: /data/machine_id foi REGERADO com valor novo (32 bytes, hash 5d41402abc4b2a76); a identidade desta máquina muda a partir de agora
 ```
+
+São sempre duas linhas. Quando a regeneração já foi feita por um processo irmão
+(registro `.machine_id.regen`), a segunda diz `foi RESTAURADO a partir do
+registro de regeneração`, e a identidade volta a ser a anterior em vez de mudar.
+Um arquivo vazio recebe o mesmo tratamento (`0 bytes`).
 
 Sem esse aviso, um agente voltaria com outro `machine_id` depois de um crash e
 apareceria no servidor Loghub como uma máquina nova, sem rastro para

@@ -3,6 +3,12 @@
 // ([Initialize]) e disponibiliza seis valores imutáveis por meio de getters de
 // pacote.
 //
+// O objetivo principal é dar ao software que a utiliza uma identidade única —
+// quem é este agente: AgentUUID (UUIDv7 gerado e persistido), AgentName e
+// Hostname — e uma localização virtual — onde ele está: MachineID (nó físico
+// ou virtual) e Workspace (tenant lógico). DataDir é suporte: o diretório onde
+// as identidades geradas são persistidas, não uma identidade.
+//
 // Os seis campos resolvidos são:
 //
 //   - DataDir   — diretório de dados persistente (env DATADIR ou /data)

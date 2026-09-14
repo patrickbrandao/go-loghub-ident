@@ -11,7 +11,14 @@ spec:
 
   volumes:
     - name: ident-data
-      emptyDir: {} # No Kubernetes real com Pod único, use emptyDir ou PVC dedicado
+      # A identidade só é estável se o volume sobreviver à recriação do Pod.
+      # Um emptyDir é apagado em rollout, eviction ou drain do nó, e a
+      # biblioteca geraria machine_id e agent_uuid novos (sem aviso, porque
+      # não há arquivo corrompido, apenas ausente). Use um PVC dedicado por
+      # Pod — ou um StatefulSet com volumeClaimTemplates. Para identidade
+      # deliberadamente efêmera, troque por "emptyDir: {}".
+      persistentVolumeClaim:
+        claimName: loghub-ident-data
 
   containers:
     # --------------------------------------------------------------------------
@@ -31,8 +38,12 @@ spec:
 
     # --------------------------------------------------------------------------
     # Sidecar de Coleta de Logs / Telemetria
-    # Compartilha intencionalmente o mesmo /data do container principal
-    # Ambos convergem atomicamente para o mesmo MachineID e AgentUUID
+    # Compartilha intencionalmente o mesmo /data do container principal.
+    # Ambos convergem para o mesmo MachineID (o Pod é o "nó") e para o mesmo
+    # AgentUUID: nesta topologia o AgentUUID identifica a INSTÂNCIA (o Pod), e
+    # a distinção entre app e sidecar vem do AgentName. Se o servidor chaveia
+    # agentes por AgentUUID, dê a cada container o seu próprio AGENT_UUID via
+    # env (ou um DATADIR próprio).
     # --------------------------------------------------------------------------
     - name: loghub-collector-sidecar
       image: myregistry.internal/loghub-collector:v1.0.0
@@ -44,3 +55,16 @@ spec:
       volumeMounts:
         - name: ident-data
           mountPath: /data
+---
+# PVC dedicado ao Pod acima. Com StatefulSet, prefira volumeClaimTemplates,
+# que cria um PVC por réplica automaticamente. Ajuste o tamanho ao mínimo da
+# sua StorageClass: os arquivos de identidade ocupam poucas dezenas de bytes.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: loghub-ident-data
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 100Mi

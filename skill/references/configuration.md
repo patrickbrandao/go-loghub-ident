@@ -37,7 +37,7 @@ Todas as fontes textuais (sejam variáveis de ambiente ou arquivos) passam pelo 
      - Se o caminho for informado explicitamente via env e for relativo, inacessível, FIFO ou > 4 KiB → aborta com **código 100**.
      - Se for o `/etc/machine-id` padrão: leitura tolerante a falhas (cai silenciosamente se ausente ou ilegível).
   3. `$DATADIR/machine_id` (arquivo persistido):
-     - Se corrompido ou vazio → emite aviso operacional em `stderr` e cai para a geração local.
+     - Se corrompido → emite aviso operacional em `stderr` e cai para a geração local. Se **vazio** → o mesmo, mas antes espera a janela de estabilização quando o arquivo tiver sido modificado há menos de 10 s (pode ser o que um irmão acabou de publicar num volume de rede); um arquivo vazio antigo é regenerado na hora. Se ausente → gera em silêncio.
   4. **Geração Local:**
      - Gera UUIDv7 criptográfico, remove hífens e grava em `$DATADIR/machine_id` com permissão `0644` e `fsync` duplo.
      - Falha de geração de UUID → **código 114**.
@@ -56,7 +56,7 @@ Todas as fontes textuais (sejam variáveis de ambiente ou arquivos) passam pelo 
 - **Formato:** UUIDv7 canônico com hífens RFC 9562 (36 caracteres: `^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`).
 - **Precedência (3 Níveis):**
   1. `AGENT_UUID` (env): Se presente e inválida → aborta com **código 107**.
-  2. `$DATADIR/agent_uuid` (arquivo persistido): Se corrompido ou vazio → emite aviso em `stderr` e regenera.
+  2. `$DATADIR/agent_uuid` (arquivo persistido): Se corrompido → emite aviso em `stderr` e regenera. Se **vazio** → o mesmo, depois da janela de estabilização quando o arquivo tiver sido modificado há menos de 10 s; um arquivo vazio antigo é regenerado na hora. Se ausente → gera em silêncio.
   3. **Geração Local:** Gera UUIDv7 canônico e grava em `$DATADIR/agent_uuid` com permissão `0644` e `fsync`.
      - Falha de geração → **código 105**.
      - Falha de gravação no disco → **código 106**.

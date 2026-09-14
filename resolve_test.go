@@ -655,7 +655,7 @@ func TestApplyAndGetters(t *testing.T) {
 		hostname:  "node01",
 		workspace: "prod",
 	})
-	if DataDir() != filepath.Clean("/data") || MachineID() == "" || AgentName() != "svc" ||
+	if DataDir() != "/data" || MachineID() == "" || AgentName() != "svc" ||
 		AgentUUID() == "" || Hostname() != "node01" || Workspace() != "prod" {
 		t.Errorf("getters não refletiram apply()")
 	}

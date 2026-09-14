@@ -41,7 +41,7 @@ module ident-test
 
 go 1.22
 
-require github.com/patrickbrandao/go-loghub-ident v0.5.0
+require github.com/patrickbrandao/go-loghub-ident v0.5.1
 ```
 
 Arquivo: main.go

@@ -143,8 +143,14 @@ func readRegular(path string, follow bool) ([]byte, error) {
 		return nil, fmt.Errorf("%w: %s tem %d bytes, acima do limite de %d",
 			errInvalidSource, path, info.Size(), maxIdentFileSize)
 	}
-	f, err := openRegular(path)
+	f, err := openRegular(path, follow)
 	if err != nil {
+		if !follow && isSymlinkRefusal(err) {
+			// O kernel recusou (O_NOFOLLOW): a entrada virou link entre o
+			// Lstat e o Open. Mesma classificação do Lstat, para que o motivo
+			// reportado ao operador seja um só.
+			return nil, fmt.Errorf("%w: %s é um link simbólico", errInvalidSource, path)
+		}
 		return nil, err
 	}
 	defer f.Close()
@@ -173,7 +179,10 @@ func readRegular(path string, follow bool) ([]byte, error) {
 // CreateExclusive — que em produção só roda em filesystems sem hard link.
 var linkFile = os.Link
 
-const (
+// claimPoll e claimTTL governam a espera do plano B. São variáveis, e não
+// constantes, apenas para que os testes encurtem a espera; em produção nada
+// as altera.
+var (
 	claimPoll = 20 * time.Millisecond
 	claimTTL  = 10 * time.Second // reivindicação mais velha que isso é de um processo morto
 )

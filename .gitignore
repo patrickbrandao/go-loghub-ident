@@ -1,5 +1,6 @@
 # Binários compilados
-examples/minimal/minimal
+skill/examples/minimal/minimal
+skill/examples/basic/basic-ident-example
 *.exe
 *.test
 *.out

@@ -138,7 +138,8 @@ sequenceDiagram
 
 ### 6.3. Bloqueio de Links Simbólicos (`ReadFileNoFollow`)
 - Para ler arquivos em `$DATADIR`, a biblioteca utiliza `ReadFileNoFollow`.
-- Utiliza `os.OpenFile` com a flag `O_NOFOLLOW` (em plataformas compatíveis) e validação via `os.Lstat` (**`BUG-18`**).
+- São três barreiras encadeadas (**`BUG-18`**): `os.Lstat` antes de abrir (um link é recusado sem ser aberto); `O_NOFOLLOW` no próprio `open` em Linux, macOS e BSDs (`system_nofollow.go`), para que o kernel recuse um link plantado entre o `Lstat` e o `open`; e `os.SameFile` depois de abrir, comparando o descritor com o que foi inspecionado. Nos Unix cujo `syscall` não expõe `O_NOFOLLOW` (Solaris, illumos, AIX, DragonFly) e no Windows valem a primeira e a terceira.
+- Se o `SameFile` falhar sem ser por link (um irmão publicou o arquivo via `ReplaceFile` naquele instante), a leitura é refeita do zero até 5 vezes (**`BUG-21`**) em vez de abortar.
 - Se o arquivo for um link simbólico, a leitura é abortada com **código de saída 100**, impedindo que um invasor no container aponte um symlink para `/etc/shadow` ou chaves de serviço do host.
 
 ### 6.4. Regra de Isolamento de Volumes

@@ -74,8 +74,12 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.22'
-      - name: build ${{ matrix.target.goos }}/${{ matrix.target.goarch }}
-        run: go build ./...
+      # go vet compila também os arquivos de teste para o alvo: pega cedo um
+      # teste que só compila na plataforma de quem o escreveu.
+      - name: build e vet ${{ matrix.target.goos }}/${{ matrix.target.goarch }}
+        run: |
+          go build ./...
+          go vet ./...
         env:
           GOOS: ${{ matrix.target.goos }}
           GOARCH: ${{ matrix.target.goarch }}

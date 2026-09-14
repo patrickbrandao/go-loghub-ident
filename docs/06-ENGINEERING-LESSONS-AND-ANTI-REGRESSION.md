@@ -20,7 +20,7 @@ Qualquer refatoração, reimplementação ou modificação neste código DEVE cu
 
 ---
 
-## 2. Catálogo Completo de Defeitos Históricos (BUG-01 a BUG-21)
+## 2. Catálogo Completo de Defeitos Históricos (BUG-01 a BUG-22)
 
 | ID | Sintoma Original / Vulnerabilidade | Causa-Raiz | Solução Arquitetural Implementada | Teste de Regressão Permanente |
 | :---: | :--- | :--- | :--- | :--- |
@@ -45,3 +45,4 @@ Qualquer refatoração, reimplementação ou modificação neste código DEVE cu
 | **BUG-19** | Erros de leitura em arquivos explícitos eram mascarados como fallbacks. | Semelhante ao BUG-15, instrução explícita do operador não cumprida não pode ser silenciada. | Qualquer falha em caminho explicitamente apontado via env que não seja inexistência aborta com código 100. | `TestFix_BUG19_StatErrorsNotSwallowed` |
 | **BUG-20** | Réplicas em NFS descartavam identidades legítimas como corrompidas por causa de latência de cache. | No NFS, processos perdedores abriam o arquivo recém-criado antes que os atributos sincronizassem, lendo 0 bytes. | Implementação de `readSettled` com até 500 tentativas (10 segundos) de tolerância antes de declarar corrupção. | `TestFix_BUG20_NFSSettledRead` |
 | **BUG-21** | Réplicas se recuperando juntas de um arquivo corrompido abortavam de forma intermitente com Exit 100 (`mudou entre a inspeção e a abertura`). | `ReadFileNoFollow` recusava como ataque o arquivo publicado por um processo irmão via `ReplaceFile` (rename atômico) entre o `Lstat` e o `Open`. Com um gerador de UUID mais rápido, a janela passou a ser atingida com frequência. | A troca entre inspeção e abertura vira o erro interno `errReplaced` e a leitura é refeita do zero, com validação completa, até 5 vezes. Symlinks plantados continuam recusados, porque cada tentativa repete o `Lstat`. | `TestFix_BUG04_CorruptRegenerationAgrees` (sob `-count` elevado) |
+| **BUG-22** | `validHostname` alocava a cada chamada (`strings.Split`), contrariando a promessa de zero alocações de `docs/07`, que nenhum teste media: os benchmarks de `tests/` só alcançam a API pública e reimplementavam os validadores. | O percurso por rótulos usava `strings.Split`, que aloca a fatia de rótulos. `IsInitialized()` também devolvia `true` antes de `apply()`, porque lia a trava contra a segunda chamada. | `validHostname` percorre os rótulos por índice (`validLabel`), sem alocar; `IsInitialized` passou a ler `ready`, que só vira `true` depois de `apply`. Os validadores reais ganharam benchmarks na raiz (`validators_bench_test.go`). | `TestValidators_ZeroAllocs`<br>`TestValidHostname_Boundaries`<br>`TestValidLabel` |

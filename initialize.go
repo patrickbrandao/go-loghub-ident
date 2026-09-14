@@ -10,6 +10,11 @@ import (
 // O CompareAndSwap detecta a segunda chamada mesmo sob concorrência.
 var initialized atomic.Bool
 
+// ready vira true somente depois de apply: é o que IsInitialized expõe. Entre
+// o CompareAndSwap e o apply os getters ainda devolvem "", e IsInitialized não
+// pode afirmar o contrário.
+var ready atomic.Bool
+
 // Initialize resolve os seis campos de identidade a partir de variáveis de
 // ambiente, arquivos e fallbacks do sistema, e os disponibiliza pelos getters
 // de pacote (DataDir, MachineID, AgentName, AgentUUID, Hostname, Workspace).
@@ -58,4 +63,5 @@ func Initialize() {
 	}
 
 	apply(id)
+	ready.Store(true)
 }

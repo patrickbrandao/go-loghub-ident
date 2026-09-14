@@ -34,9 +34,11 @@ jobs:
       - name: testes com detector de corrida
         run: go test -race ./...
 
-      - name: exemplo compila
-        run: go build ./...
-        working-directory: examples/minimal
+      - name: exemplos compilam
+        run: |
+          for ex in skill/examples/minimal skill/examples/basic; do
+            (cd "$ex" && go build ./...)
+          done
 
   test-platforms:
     # Executa a suíte (unitária + integração por subprocesso) nas plataformas

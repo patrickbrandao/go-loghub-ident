@@ -1,7 +1,5 @@
 package loghubident
 
-import "strings"
-
 // DefaultDataDir é o caminho padrão do diretório de dados quando a variável de
 // ambiente DATADIR está ausente ou vazia.
 const DefaultDataDir = "/data"
@@ -178,21 +176,40 @@ func validWorkspace(s string) bool {
 // rótulo vazio e nenhum hífen nas bordas de um rótulo. Sem isso, valores
 // degenerados como "-", "..." ou "-host-" seriam aceitos e virariam chave de
 // agrupamento rio abaixo.
+//
+// Os rótulos são percorridos por índice, sem strings.Split: o validador roda
+// no boot de todo consumidor e a promessa de zero alocações (docs/07) vale
+// para os cinco validadores, não só para os de caractere único.
 func validHostname(s string) bool {
 	if s == "" || len(s) > maxHostnameLen {
 		return false
 	}
-	for _, label := range strings.Split(s, ".") {
-		if label == "" || len(label) > maxLabelLen {
+	start := 0 // início do rótulo corrente
+	for i := 0; i <= len(s); i++ {
+		if i < len(s) && s[i] != '.' {
+			continue
+		}
+		// s[start:i] é um rótulo completo (o último termina no fim da string).
+		if !validLabel(s[start:i]) {
 			return false
 		}
-		if !isAlnumLower(label[0]) || !isAlnumLower(label[len(label)-1]) {
+		start = i + 1
+	}
+	return true
+}
+
+// validLabel aplica a um único rótulo as regras da RFC 1123: 1 a 63
+// caracteres de [a-z0-9-], sem hífen na primeira nem na última posição.
+func validLabel(label string) bool {
+	if label == "" || len(label) > maxLabelLen {
+		return false
+	}
+	if !isAlnumLower(label[0]) || !isAlnumLower(label[len(label)-1]) {
+		return false
+	}
+	for i := 0; i < len(label); i++ {
+		if c := label[i]; !isAlnumLower(c) && c != '-' {
 			return false
-		}
-		for i := 0; i < len(label); i++ {
-			if c := label[i]; !isAlnumLower(c) && c != '-' {
-				return false
-			}
 		}
 	}
 	return true
@@ -244,4 +261,8 @@ func Workspace() string { return idWorkspace }
 
 // IsInitialized informa se Initialize já concluiu com sucesso. Getters chamados
 // antes disso devolvem "" (zero value) e não devem ser usados — ver SPEC §3.
-func IsInitialized() bool { return initialized.Load() }
+//
+// Lê ready, e não initialized: initialized vira true no INÍCIO de Initialize
+// (é a trava contra a segunda chamada), enquanto ready só vira true depois de
+// apply, quando os getters já têm os valores finais.
+func IsInitialized() bool { return ready.Load() }

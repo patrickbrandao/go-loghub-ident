@@ -12,6 +12,10 @@ import (
 )
 
 // fakeSystem é uma implementação em memória de system, usada nos testes.
+//
+// Os caminhos são guardados sempre com "/": a lib monta caminhos com
+// filepath.Join/Clean, que no Windows usam "\", e as chaves dos testes
+// ("/data/agent_uuid") precisam casar em qualquer plataforma.
 type fakeSystem struct {
 	env      map[string]string
 	files    map[string]string // caminho -> conteúdo
@@ -33,6 +37,12 @@ type fakeSystem struct {
 	statErr   map[string]error
 	fileSizes map[string]int64
 	fileModes map[string]os.FileMode
+	removeErr map[string]error // caminho -> erro forçado na remoção
+
+	// onRemoved é chamado após uma remoção bem-sucedida. Permite simular outro
+	// processo que recria o arquivo logo em seguida (um registro de
+	// regeneração que reaparece com lixo, por exemplo).
+	onRemoved func(path string)
 
 	// onCreateRefused é chamado quando CreateExclusive recusa a criação porque
 	// o arquivo já existe. Permite reproduzir a janela da corrida entre
@@ -55,6 +65,7 @@ func newFakeSystem() *fakeSystem {
 		readErr:   map[string]error{},
 		fileSizes: map[string]int64{},
 		fileModes: map[string]os.FileMode{},
+		removeErr: map[string]error{},
 		writeErr:  map[string]error{},
 		written:   map[string]string{},
 		perms:     map[string]os.FileMode{},
@@ -67,6 +78,7 @@ func newFakeSystem() *fakeSystem {
 func (f *fakeSystem) Getenv(key string) string { return f.env[key] }
 
 func (f *fakeSystem) Stat(path string) (os.FileInfo, error) {
+	path = filepath.ToSlash(path)
 	if err := f.statErr[path]; err != nil {
 		return nil, err
 	}
@@ -88,6 +100,7 @@ func (f *fakeSystem) Stat(path string) (os.FileInfo, error) {
 }
 
 func (f *fakeSystem) ReadFile(path string) ([]byte, error) {
+	path = filepath.ToSlash(path)
 	if err := f.readErr[path]; err != nil {
 		return nil, err
 	}
@@ -107,6 +120,7 @@ func (f *fakeSystem) ReadFile(path string) ([]byte, error) {
 }
 
 func (f *fakeSystem) ReadFileNoFollow(path string) ([]byte, error) {
+	path = filepath.ToSlash(path)
 	if f.symlinks[path] != "" {
 		return nil, fmt.Errorf("%w: %s é um link simbólico", errInvalidSource, path)
 	}
@@ -115,6 +129,7 @@ func (f *fakeSystem) ReadFileNoFollow(path string) ([]byte, error) {
 
 // CreateExclusive só grava se o caminho ainda não existir, como o O_EXCL real.
 func (f *fakeSystem) CreateExclusive(path string, data []byte, perm os.FileMode) (bool, error) {
+	path = filepath.ToSlash(path)
 	if err := f.writeErr[path]; err != nil {
 		return false, err
 	}
@@ -129,6 +144,7 @@ func (f *fakeSystem) CreateExclusive(path string, data []byte, perm os.FileMode)
 }
 
 func (f *fakeSystem) ReplaceFile(path string, data []byte, perm os.FileMode) error {
+	path = filepath.ToSlash(path)
 	if err := f.writeErr[path]; err != nil {
 		return err
 	}
@@ -145,10 +161,17 @@ func (f *fakeSystem) store(path string, data []byte, perm os.FileMode) {
 }
 
 func (f *fakeSystem) Remove(path string) error {
+	path = filepath.ToSlash(path)
+	if err := f.removeErr[path]; err != nil {
+		return err
+	}
 	if _, ok := f.files[path]; !ok {
 		return &fs.PathError{Op: "remove", Path: path, Err: fs.ErrNotExist}
 	}
 	delete(f.files, path)
+	if f.onRemoved != nil {
+		f.onRemoved(path)
+	}
 	return nil
 }
 
@@ -287,7 +310,7 @@ func TestResolve_DataDir_CustomPath(t *testing.T) {
 	if f != nil {
 		t.Fatalf("falha inesperada: %+v", f)
 	}
-	if id.dataDir != "/var/lib/app" {
+	if id.dataDir != filepath.Clean("/var/lib/app") {
 		t.Errorf("dataDir = %q", id.dataDir)
 	}
 	if _, ok := sys.written["/var/lib/app/agent_uuid"]; !ok {
@@ -1312,5 +1335,232 @@ func TestResolve_MachineIDFileWithControlChars(t *testing.T) {
 		if !strings.Contains(f.reason, "caractere de controle") {
 			t.Errorf("MACHINE_ID_FILE=%q: motivo deveria citar caractere de controle, obtive %q", bad, f.reason)
 		}
+	}
+}
+
+// ----- persistGenerated: caminhos de erro do protocolo de convergência -----
+//
+// Cada ramo de falha de persistGenerated devolve o código do CAMPO (106 para
+// AGENT_UUID, 113 para MACHINE_ID) quando o problema é de gravação, e 100
+// (DATADIR) quando é de leitura. Os testes abaixo fixam essa distinção, que
+// orienta o operador para o disco ou para o diretório de dados.
+
+// agentUUIDOnly devolve um fake em que apenas AGENT_UUID precisa ser gerado e
+// persistido; os demais campos vêm de env ou de fallback determinístico.
+func agentUUIDOnly() *fakeSystem {
+	sys := newFakeSystem().withDataDir()
+	sys.env["MACHINE_ID"] = "abcdef0123456789abcdef0123456789"
+	sys.env["WORKSPACE"] = "prod"
+	return sys
+}
+
+// mustFail confere código e variável de uma falha e devolve o motivo.
+func mustFail(t *testing.T, f *failure, code int, variable string) string {
+	t.Helper()
+	if f == nil {
+		t.Fatalf("esperava falha %d/%s, obtive sucesso", code, variable)
+	}
+	if f.code != code || f.variable != variable {
+		t.Fatalf("falha = %d/%s (%s); esperava %d/%s", f.code, f.variable, f.reason, code, variable)
+	}
+	return f.reason
+}
+
+func notExist(path string) error {
+	return &fs.PathError{Op: "open", Path: path, Err: fs.ErrNotExist}
+}
+
+// Perdemos a corrida de criação e a releitura do arquivo do vencedor falha por
+// I/O: é problema do diretório de dados (100), não do campo.
+func TestResolve_LostRace_ReadFailureAborts100(t *testing.T) {
+	sys := agentUUIDOnly()
+	sys.files["/data/agent_uuid"] = "0190aaaa-bbbb-7ccc-8ddd-eeeeffff0000\n"
+	sys.readErr["/data/agent_uuid"] = notExist("/data/agent_uuid")
+	sys.onCreateRefused = func(p string) {
+		sys.readErr[p] = errors.New("input/output error")
+	}
+	_, f := resolve(sys)
+	reason := mustFail(t, f, 100, "DATADIR")
+	if !strings.Contains(reason, "input/output error") {
+		t.Errorf("motivo não traz a causa real: %q", reason)
+	}
+}
+
+// Perdemos a corrida e o vencedor gravou lixo: o processo avisa, entra no
+// protocolo de regeneração e o valor final é válido e persistido.
+func TestResolve_LostRace_WinnerWroteGarbage_Regenerates(t *testing.T) {
+	sys := agentUUIDOnly()
+	sys.files["/data/agent_uuid"] = "lixo\n"
+	sys.readErr["/data/agent_uuid"] = notExist("/data/agent_uuid")
+
+	id, f := resolveRacing(sys, "/data/agent_uuid")
+	if f != nil {
+		t.Fatalf("falha inesperada: %+v", f)
+	}
+	if id.agentUUID != sys.uuid {
+		t.Errorf("agentUUID = %q (esperava o valor regenerado %q)", id.agentUUID, sys.uuid)
+	}
+	for _, path := range []string{"/data/agent_uuid", "/data/.agent_uuid.regen"} {
+		if got := sys.files[path]; got != sys.uuid+"\n" {
+			t.Errorf("%s = %q (esperava %q)", path, got, sys.uuid+"\n")
+		}
+	}
+	if len(id.warnings) == 0 || !strings.Contains(strings.Join(id.warnings, "\n"), "existe com conteúdo inválido") {
+		t.Errorf("faltou o aviso de conteúdo inválido do vencedor: %q", id.warnings)
+	}
+}
+
+func TestResolve_Regen_WriteFailureUsesFieldCode(t *testing.T) {
+	sys := agentUUIDOnly()
+	sys.files["/data/agent_uuid"] = "lixo\n"
+	sys.writeErr["/data/.agent_uuid.regen"] = errors.New("no space left on device")
+	_, f := resolve(sys)
+	reason := mustFail(t, f, 106, "AGENT_UUID")
+	if !strings.Contains(reason, ".agent_uuid.regen") || !strings.Contains(reason, "no space left") {
+		t.Errorf("motivo deveria citar o registro e a causa: %q", reason)
+	}
+}
+
+func TestResolve_Regen_ReadFailureAborts100(t *testing.T) {
+	sys := agentUUIDOnly()
+	sys.files["/data/agent_uuid"] = "lixo\n"
+	sys.files["/data/.agent_uuid.regen"] = "0190aaaa-bbbb-7ccc-8ddd-eeeeffff0000\n"
+	sys.readErr["/data/.agent_uuid.regen"] = errors.New("input/output error")
+	_, f := resolve(sys)
+	mustFail(t, f, 100, "DATADIR")
+}
+
+func TestResolve_Regen_RemoveFailureUsesFieldCode(t *testing.T) {
+	sys := agentUUIDOnly()
+	sys.files["/data/agent_uuid"] = "lixo\n"
+	sys.files["/data/.agent_uuid.regen"] = "" // registro incompleto, precisa ser removido
+	sys.removeErr["/data/.agent_uuid.regen"] = errors.New("permission denied")
+	_, f := resolve(sys)
+	reason := mustFail(t, f, 106, "AGENT_UUID")
+	if !strings.Contains(reason, "remoção") {
+		t.Errorf("motivo deveria citar a remoção do registro: %q", reason)
+	}
+}
+
+func TestResolve_Regen_ReplaceFailureUsesFieldCode(t *testing.T) {
+	t.Run("agent_uuid", func(t *testing.T) {
+		sys := agentUUIDOnly()
+		sys.files["/data/agent_uuid"] = "lixo\n"
+		sys.writeErr["/data/agent_uuid"] = errors.New("read-only file system")
+		_, f := resolve(sys)
+		mustFail(t, f, 106, "AGENT_UUID")
+	})
+	t.Run("machine_id", func(t *testing.T) {
+		sys := newFakeSystem().withDataDir()
+		sys.env["AGENT_UUID"] = "019e99e3-42f0-7882-9719-2305ff84949c"
+		sys.env["WORKSPACE"] = "prod"
+		sys.files["/data/machine_id"] = "lixo\n"
+		sys.writeErr["/data/machine_id"] = errors.New("read-only file system")
+		_, f := resolve(sys)
+		mustFail(t, f, 113, "MACHINE_ID")
+	})
+}
+
+// Outro processo recria um registro inválido a cada remoção: o protocolo não
+// pode girar para sempre e desiste com o código do campo após regenAttempts.
+func TestResolve_Regen_GivesUpAfterAttempts(t *testing.T) {
+	sys := agentUUIDOnly()
+	sys.files["/data/agent_uuid"] = "lixo\n"
+	sys.files["/data/.agent_uuid.regen"] = ""
+	removals := 0
+	sys.onRemoved = func(p string) {
+		if p == "/data/.agent_uuid.regen" {
+			removals++
+			sys.files[p] = "" // reaparece vazio
+		}
+	}
+	_, f := resolve(sys)
+	reason := mustFail(t, f, 106, "AGENT_UUID")
+	if !strings.Contains(reason, fmt.Sprintf("%d tentativas", regenAttempts)) {
+		t.Errorf("motivo deveria citar o número de tentativas: %q", reason)
+	}
+	if removals != regenAttempts {
+		t.Errorf("removeu o registro %d vez(es); esperava %d", removals, regenAttempts)
+	}
+}
+
+// ----- Nível 2 do MACHINE_ID: o arquivo PADRÃO do sistema só cai, nunca aborta -----
+
+func TestResolve_MachineID_DefaultFileNotRegularFallsThrough(t *testing.T) {
+	sys := newFakeSystem().withDataDir()
+	sys.env["AGENT_UUID"] = "019e99e3-42f0-7882-9719-2305ff84949c"
+	sys.env["WORKSPACE"] = "prod"
+	sys.dirs[DefaultMachineIDFile] = true // /etc/machine-id é um diretório
+	sys.files["/data/machine_id"] = "11112222333344445555666677778888\n"
+
+	id, f := resolve(sys)
+	if f != nil {
+		t.Fatalf("falha inesperada: %+v", f)
+	}
+	if id.machineID != "11112222333344445555666677778888" {
+		t.Errorf("machineID = %q (esperava o valor de $DATADIR)", id.machineID)
+	}
+	if !strings.Contains(strings.Join(id.debug, "\n"), "ignorada") {
+		t.Errorf("debug deveria registrar a fonte ignorada: %q", id.debug)
+	}
+}
+
+func TestResolve_MachineID_DefaultFileIOErrorFallsThrough(t *testing.T) {
+	sys := newFakeSystem().withDataDir()
+	sys.env["AGENT_UUID"] = "019e99e3-42f0-7882-9719-2305ff84949c"
+	sys.env["WORKSPACE"] = "prod"
+	sys.readErr[DefaultMachineIDFile] = errors.New("permission denied")
+	sys.files["/data/machine_id"] = "11112222333344445555666677778888\n"
+
+	id, f := resolve(sys)
+	if f != nil {
+		t.Fatalf("falha inesperada: %+v", f)
+	}
+	if id.machineID != "11112222333344445555666677778888" {
+		t.Errorf("machineID = %q (esperava o valor de $DATADIR)", id.machineID)
+	}
+	if !strings.Contains(strings.Join(id.debug, "\n"), "ilegível") {
+		t.Errorf("debug deveria registrar o arquivo ilegível: %q", id.debug)
+	}
+}
+
+// ----- Falhas do $DATADIR alcançadas por campos que ainda não tinham teste -----
+
+func TestResolve_MachineID_DataDirStatErrorAborts100(t *testing.T) {
+	sys := newFakeSystem() // sem withDataDir: o Stat é que decide
+	sys.statErr["/data"] = errors.New("permission denied")
+	sys.env["AGENT_UUID"] = "019e99e3-42f0-7882-9719-2305ff84949c"
+	sys.env["WORKSPACE"] = "prod"
+	_, f := resolve(sys)
+	reason := mustFail(t, f, 100, "DATADIR")
+	if !strings.Contains(reason, "inacessível") || !strings.Contains(reason, "permission denied") {
+		t.Errorf("motivo deveria citar a inacessibilidade e a causa: %q", reason)
+	}
+}
+
+func TestResolve_Workspace_DataDirReadFailureAborts100(t *testing.T) {
+	sys := newFakeSystem().withDataDir()
+	sys.env["MACHINE_ID"] = "abcdef0123456789abcdef0123456789"
+	sys.env["AGENT_UUID"] = "019e99e3-42f0-7882-9719-2305ff84949c"
+	sys.symlinks["/data/workspace"] = "/etc/passwd"
+	_, f := resolve(sys)
+	reason := mustFail(t, f, 100, "DATADIR")
+	if !strings.Contains(reason, "link simbólico") {
+		t.Errorf("motivo deveria citar o link simbólico: %q", reason)
+	}
+}
+
+func TestResolve_AgentUUID_GeneratedInvalidAborts107(t *testing.T) {
+	sys := newFakeSystem().withDataDir()
+	sys.env["MACHINE_ID"] = "abcdef0123456789abcdef0123456789"
+	sys.env["WORKSPACE"] = "prod"
+	sys.uuid = "nao-e-um-uuid"
+	_, f := resolve(sys)
+	reason := mustFail(t, f, 107, "AGENT_UUID")
+	if !strings.Contains(reason, "valor gerado") {
+		t.Errorf("motivo deveria citar o valor gerado: %q", reason)
+	}
+	if _, ok := sys.files["/data/agent_uuid"]; ok {
+		t.Error("um valor gerado inválido nunca pode ser persistido")
 	}
 }

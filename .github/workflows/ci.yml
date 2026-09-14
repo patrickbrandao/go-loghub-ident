@@ -34,9 +34,11 @@ jobs:
       - name: testes com detector de corrida
         run: go test -race ./...
 
-      - name: exemplo compila
-        run: go build ./...
-        working-directory: examples/minimal
+      - name: exemplos compilam
+        run: |
+          for ex in skill/examples/minimal skill/examples/basic; do
+            (cd "$ex" && go build ./...)
+          done
 
   test-platforms:
     # Executa a suíte (unitária + integração por subprocesso) nas plataformas
@@ -72,8 +74,12 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.22'
-      - name: build ${{ matrix.target.goos }}/${{ matrix.target.goarch }}
-        run: go build ./...
+      # go vet compila também os arquivos de teste para o alvo: pega cedo um
+      # teste que só compila na plataforma de quem o escreveu.
+      - name: build e vet ${{ matrix.target.goos }}/${{ matrix.target.goarch }}
+        run: |
+          go build ./...
+          go vet ./...
         env:
           GOOS: ${{ matrix.target.goos }}
           GOARCH: ${{ matrix.target.goarch }}

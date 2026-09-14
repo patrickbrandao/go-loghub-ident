@@ -13,8 +13,8 @@
 | Módulo Go           | `github.com/patrickbrandao/go-loghub-ident`        |
 | Cláusula `package`  | `loghubident`                                      |
 | Alias de uso        | `lhident`                                          |
-| Versão mínima de Go | 1.22 (exigida pela dependência `go-loghub-uuid`)   |
-| Dependência externa | `github.com/patrickbrandao/go-loghub-uuid`         |
+| Versão mínima de Go | 1.22 (exigida pela dependência `go-loghub-uuidv7`) |
+| Dependência externa | `github.com/patrickbrandao/go-loghub-uuidv7`       |
 
 > Observação: o rascunho pedia Go 1.21+. A dependência de UUID exige 1.22, então
 > esta é a versão mínima efetiva.
@@ -82,7 +82,7 @@ func resolve(sys system) (*identity, *failure)
 ```
 
 - `osSystem{}` é a implementação real (usa `os`, `filepath` e
-  `loghubuuid.GenerateString(loghubuuid.Level1)`).
+  `uuidv7.GenerateString(uuidv7.Level1)`).
 - `Initialize()` chama `resolve(osSystem{})`; em erro, escreve em stderr e chama
   `os.Exit(failure.code)`.
 - Os testes injetam um `fakeSystem` com env/arquivos/hostname/argv em memória e
@@ -290,7 +290,7 @@ Cadeia:
 1. Env `AGENT_UUID` — presente e inválida → aborta **107**. (Nunca grava arquivo.)
 2. Arquivo `$DATADIR/agent_uuid` (auto-gerido) — vazio/inválido → trata como
    ausente e regenera.
-3. **Gerar:** `loghubuuid.GenerateString(loghubuuid.Level1)`; gravar em
+3. **Gerar:** `uuidv7.GenerateString(uuidv7.Level1)`; gravar em
    `$DATADIR/agent_uuid` (perm 0644, garantida, durável e atômica — ver §4).
    - Falha de geração → **105**; falha de gravação → **106**; valor gerado que
      reprova na validação → **107**.

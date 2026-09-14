@@ -12,8 +12,8 @@
 | **Módulo Go** | `github.com/patrickbrandao/go-loghub-ident` | Caminho do repositório no GitHub. |
 | **Cláusula `package`** | `loghubident` | Nome do pacote Go importável. |
 | **Alias Recomendado** | `lhident` | Convenção de importação em projetos consumidores (`import lhident "github.com/patrickbrandao/go-loghub-ident"`). |
-| **Versão Mínima de Go** | `go 1.22` | Exigida pelo gerador de UUIDv7 (`go-loghub-uuid`). |
-| **Dependência Externa Única** | `github.com/patrickbrandao/go-loghub-uuid v0.1.0` | Utilizada exclusivamente para geração local de UUIDv7 canônico com precisão de milissegundos e entropia criptográfica. |
+| **Versão Mínima de Go** | `go 1.22` | Exigida pelo gerador de UUIDv7 (`go-loghub-uuidv7`). |
+| **Dependência Externa Única** | `github.com/patrickbrandao/go-loghub-uuidv7 v0.0.2` | Utilizada exclusivamente para geração local de UUIDv7 canônico (nível 1, precisão de milissegundos). A entropia vem do gerador do runtime do Go (ChaCha8, semeado pelo SO): adequada a identificadores, não a segredos. |
 
 ### Convenção de Idiomas
 - **Inglês:** Nomes de variáveis, constantes, funções, tipos, structs, métodos, commits de git e branches.

@@ -8,7 +8,10 @@
 // faria — o que cobre justamente o que os testes unitários da raiz não
 // alcançam: Initialize (stderr e os.Exit) e a resolução completa sobre o
 // osSystem real. (system_test.go cobre osSystem isoladamente: ReadFile,
-// ReadFileNoFollow, CreateExclusive e ReplaceFile.)
+// ReadFileNoFollow, CreateExclusive, o plano B com .claim e ReplaceFile.)
+//
+// examples_test.go compila e executa os programas de ../skill/examples, o
+// caminho que um projeto consumidor percorre de ponta a ponta.
 //
 // # Como os testes funcionam
 //

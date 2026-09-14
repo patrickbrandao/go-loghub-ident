@@ -11,7 +11,7 @@ arquivos e fallbacks do sistema. Projetada para microserviços em containers.
 - **Imutável após `Initialize`:** os valores são escritos uma única vez no boot
   e nunca mais modificados.
 - **Multiplataforma:** UUIDv7 gerado localmente via
-  [`go-loghub-uuid`](https://github.com/patrickbrandao/go-loghub-uuid), sem
+  [`go-loghub-uuidv7`](https://github.com/patrickbrandao/go-loghub-uuidv7), sem
   dependência de `/proc`.
 
 > A especificação técnica completa está modularizada em [docs/00-INDEX.md](docs/00-INDEX.md) (com sumário em [SPEC.md](SPEC.md)). Para um guia prático de integração e receitas para novos serviços, consulte a [skill/](skill/SKILL.md).

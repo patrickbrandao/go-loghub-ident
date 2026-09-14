@@ -26,7 +26,7 @@
 // crash no meio da escrita não deixa arquivo truncado. Descartar uma identidade
 // persistida inválida sempre gera aviso em stderr.
 //
-// O UUIDv7 é gerado localmente via github.com/patrickbrandao/go-loghub-uuid,
+// O UUIDv7 é gerado localmente via github.com/patrickbrandao/go-loghub-uuidv7,
 // sem dependência de /proc, sendo portanto multiplataforma.
 //
 // # Uso rápido

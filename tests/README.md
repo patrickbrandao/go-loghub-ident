@@ -2,7 +2,9 @@
 
 Testes que exercitam a **API pública** de `go-loghub-ident` contra o sistema
 operacional real (sem o `fakeSystem`). Complementam `../resolve_test.go`, que
-testa a função pura `resolve` com um `system` injetado.
+testa a função pura `resolve` com um `system` injetado, `../helpers_test.go`,
+que testa cada auxiliar isolado, e `../system_test.go`, que testa as primitivas
+reais de `osSystem`.
 
 | Arquivo             | Conteúdo                                                                 |
 | ------------------- | ------------------------------------------------------------------------ |
@@ -11,6 +13,7 @@ testa a função pura `resolve` com um `system` injetado.
 | `exitcodes_test.go` | a tabela de códigos de saída da SPEC §13, ponta a ponta                  |
 | `bugs_test.go`      | testes de regressão permanentes (BUG-01 a BUG-16)                        |
 | `bugs2_test.go`     | testes de regressão de persistência durável e atômica (BUG-17 a BUG-20)  |
+| `examples_test.go`  | compila e executa os programas de `../skill/examples/` (feliz, volume, falha) |
 | `bench_test.go`     | custo dos getters, da validação (regex vs. manual) e de um boot completo |
 
 ## Como funciona

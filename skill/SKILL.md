@@ -171,7 +171,7 @@ Se o processo encerrar durante o boot com código entre 100 e 114, consulte esta
 | **102** | `MACHINE_ID` | Formato não hexadecimal ou comprimento != 32. | Forneça 32 caracteres hexadecimais `0-9a-f` (com ou sem hífens). |
 | **103** | `AGENT_NAME` | Todas as fontes de nome do agente vazias. | Defina `AGENT_NAME` na env ou passe um nome de executável válido. |
 | **104** | `AGENT_NAME` | Nome contém caracteres inválidos, > 64 chars ou é `.` / `..`. | Use apenas letras minúsculas, números, ponto, hífen e sublinhado (`[a-z0-9._-]`). |
-| **105** | `AGENT_UUID` | Falha interna na geração de UUIDv7. | Falha de entropia do sistema operacional. Verifique o gerador de números aleatórios do kernel (`/dev/urandom`). |
+| **105** | `AGENT_UUID` | Falha interna na geração de UUIDv7. | Não ocorre com o gerador atual (`go-loghub-uuidv7` não retorna erro). Se aparecer, trate como defeito da biblioteca. |
 | **106** | `AGENT_UUID` | Falha de gravação no volume `$DATADIR/agent_uuid`. | Verifique espaço em disco, quota de inodes e permissões de escrita em `$DATADIR`. |
 | **107** | `AGENT_UUID` | Valor não é um UUIDv7 canônico com hífens. | Corrija o valor de `AGENT_UUID` para o padrão RFC 9562 (36 caracteres). |
 | **108** | `HOSTNAME` | Chamada ao sistema `os.Hostname()` falhou. | Configure a variável de ambiente `HOSTNAME` explicitamente. |
@@ -179,7 +179,7 @@ Se o processo encerrar durante o boot com código entre 100 e 114, consulte esta
 | **111** | `WORKSPACE` | Workspace inválido (> 64 chars, caracteres inválidos ou `.`/`..`). | Ajuste `WORKSPACE` para conter apenas `[a-z0-9.-]` (não use `_`). |
 | **112** | `geral` | `Initialize()` chamado mais de uma vez. | Remova invocações duplicadas de `lhident.Initialize()` no seu código Go. |
 | **113** | `MACHINE_ID` | Falha de gravação no volume `$DATADIR/machine_id`. | Verifique permissões de escrita e espaço no disco em `$DATADIR`. |
-| **114** | `MACHINE_ID` | Falha interna na geração de UUID para machine-id. | Verifique o gerador de números aleatórios do sistema operacional. |
+| **114** | `MACHINE_ID` | Falha interna na geração de UUID para machine-id. | Não ocorre com o gerador atual (`go-loghub-uuidv7` não retorna erro). Se aparecer, trate como defeito da biblioteca. |
 
 ---
 

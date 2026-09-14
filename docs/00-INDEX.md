@@ -32,7 +32,7 @@ flowchart TD
     Step2 --> Step3["3. I/O Seguro e Persistência Concorrente<br>(docs/04-PERSISTENCE-CONCURRENCY-AND-SAFETY.md)"]
     Step3 --> Step4["4. Motor de Resolução e Fallbacks<br>(docs/03-FIELDS-RESOLUTION-AND-FALLBACKS.md)"]
     Step4 --> Step5["5. Observabilidade, Erros e Saídas<br>(docs/05-OBSERVABILITY-AND-EXIT-CODES.md)"]
-    Step5 --> Step6["6. Auditoria Anti-Regressão (BUG-01 a BUG-20)<br>(docs/06-ENGINEERING-LESSONS-AND-ANTI-REGRESSION.md)"]
+    Step5 --> Step6["6. Auditoria Anti-Regressão (BUG-01 a BUG-22)<br>(docs/06-ENGINEERING-LESSONS-AND-ANTI-REGRESSION.md)"]
     Step6 --> Step7["7. Harness de Testes e Benchmarks<br>(docs/07-TESTING-STRATEGY.md)"]
 ```
 

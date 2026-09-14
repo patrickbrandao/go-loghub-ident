@@ -24,14 +24,16 @@ flowchart TD
     end
 ```
 
-### Camada 1: Testes Unitários Puros (`resolve_test.go`)
-- **Alvo:** A função pura `resolve(sys system) (*identity, *failure)`.
-- **Mecanismo:** Utiliza o mock `fakeSystem`, que emula em memória o mapa de variáveis de ambiente, arquivos virtuais, `argv`, `hostname` e erros simulados.
-- **Vantagem:** Execução em nanossegundos, sem chamadas ao SO e sem risco de abortar o processo de teste. Permite cobrir caminhos inalcançáveis por fora (como falhas internas da syscall `Hostname()` ou de `GenerateUUIDv7()`, testando os códigos **105**, **108** e **114**).
+### Camada 1: Testes Unitários Puros (`resolve_test.go`, `helpers_test.go`, `system_test.go`)
+- **Alvo:** A função pura `resolve(sys system) (*identity, *failure)`, cada auxiliar isolado e as primitivas reais de `osSystem`.
+- **Mecanismo:** [`resolve_test.go`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/resolve_test.go) usa o mock `fakeSystem`, que emula em memória variáveis de ambiente, arquivos virtuais, `argv`, `hostname` e erros simulados de leitura, gravação e remoção (`readErr`, `writeErr`, `removeErr`), além dos ganchos `onCreateRefused` e `onRemoved`, que reproduzem um processo irmão agindo entre duas operações nossas. [`helpers_test.go`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/helpers_test.go) dá a cada auxiliar (`preview`, `hasControlBytes`, `normalizeMachineID`, `validLabel`, …) o seu próprio contrato e prova, com `testing.AllocsPerRun`, que nenhum validador aloca. [`system_test.go`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/system_test.go) e [`system_unix_test.go`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/system_unix_test.go) exercitam `osSystem` contra o filesystem real: limite de 4 KiB, recusa de symlink (inclusive pelo `O_NOFOLLOW` do kernel), FIFO sem bloqueio, as duas formas de `CreateExclusive`, o ciclo completo da reivindicação `.claim` do plano B (obsoleta, viva com destino publicado, viva que ainda vai publicar, viva que nunca publica) e os ramos de erro das gravações.
+- **Seams de teste:** `settleSleep`, `linkFile`, `claimTTL` e `claimPoll` são variáveis de pacote apenas para que os testes encurtem esperas e forcem o plano B; em produção nada as altera.
+- **Vantagem:** Execução em milissegundos, sem risco de abortar o processo de teste. Permite cobrir caminhos inalcançáveis por fora (falhas de `Hostname()` ou de `GenerateUUIDv7()`, códigos **105**, **108** e **114**; cada ramo de erro do protocolo de regeneração `.regen`).
 
 ### Camada 2: Testes de Integração Ponta a Ponta (`tests/`)
 - **Alvo:** A função pública real `Initialize()` e os getters públicos contra o sistema operacional real (arquivos reais em diretórios temporários, concorrência entre processos, FIFOs e symlinks).
 - **Mecanismo:** Harness de subprocesso baseado em `TestMain` em [`tests/helper_test.go`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/tests/helper_test.go).
+- **Aplicações de exemplo:** [`tests/examples_test.go`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/tests/examples_test.go) compila cada programa de `skill/examples/` com o `go` do PATH (o `replace` do `go.mod` deles aponta para este checkout) e o executa em ambiente limpo: caminho feliz via env, geração e reutilização de identidade num volume temporário e falha com o código de saída da biblioteca. É o mesmo caminho que um projeto consumidor percorre.
 
 ---
 
@@ -72,7 +74,7 @@ go test ./tests/ -coverpkg=github.com/patrickbrandao/go-loghub-ident
 
 ## 3. Testes de Anti-Regressão Permanente (`TestFix_BUGxx`)
 
-Os arquivos [`tests/bugs_test.go`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/tests/bugs_test.go) e [`tests/bugs2_test.go`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/tests/bugs2_test.go) contêm testes permanentes dedicados a imortalizar cada um dos 20 defeitos catalogados em [`06-ENGINEERING-LESSONS-AND-ANTI-REGRESSION.md`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/docs/06-ENGINEERING-LESSONS-AND-ANTI-REGRESSION.md):
+Os arquivos [`tests/bugs_test.go`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/tests/bugs_test.go) e [`tests/bugs2_test.go`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/tests/bugs2_test.go) contêm testes permanentes dedicados a imortalizar os defeitos catalogados (os de validação e de `osSystem` ficam na raiz, em `helpers_test.go` e `system_test.go`) em [`06-ENGINEERING-LESSONS-AND-ANTI-REGRESSION.md`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/docs/06-ENGINEERING-LESSONS-AND-ANTI-REGRESSION.md):
 
 - Cada teste é nomeado como `TestFix_BUGxx_<Descrição>` e documenta detalhadamente a condição que falhava e o comportamento correto esperado.
 - **Regra:** Nenhum teste `TestFix_` pode ser removido ou afrouxado.
@@ -91,12 +93,19 @@ O arquivo [`tests/bench_test.go`](file:///Users/patrickbrandao/Projects/loghub/g
 | Operação Auditada | Meta de Tempo | Meta de Alocação | Comentário / Justificativa |
 | :--- | :---: | :---: | :--- |
 | **Getters Públicos** (`DataDir()`, etc.) | **< 0,5 ns/op** | **0 B/op (0 allocs)** | Leitura $O(1)$ direta de memória, sem locks nem overhead atômico. |
-| **Validador Manual** (`validMachineID`) | **< 15 ns/op** | **0 B/op (0 allocs)** | Validação manual byte a byte sem compilar nem executar regex. |
-| **Validador Manual** (`validHostname`) | **< 40 ns/op** | **0 B/op (0 allocs)** | Validação por rótulos da RFC 1123 com alocação zero de heap. |
+| **Validador Manual** (`validMachineID`) | **< 25 ns/op** | **0 B/op (0 allocs)** | Validação manual byte a byte sem compilar nem executar regex. |
+| **Validador Manual** (`validAgentUUID`) | **< 60 ns/op** | **0 B/op (0 allocs)** | Posições fixas de hífen, versão e variante conferidas no mesmo laço. |
+| **Validador Manual** (`validHostname`) | **< 40 ns/op** | **0 B/op (0 allocs)** | Rótulos da RFC 1123 percorridos por índice, sem `strings.Split` (**`BUG-22`**). |
 | **Ciclo Completo de Boot** (`Initialize()`) | **< 450 µs/op** | Mínima | Resolução total dos 6 campos a frio. |
+
+As metas de tempo são ordens de grandeza (variam com a CPU); a de alocação é exata e **testada**: `TestValidators_ZeroAllocs` falha se qualquer validador passar a alocar. Os validadores reais são medidos na raiz, onde são visíveis; `tests/bench_test.go` só alcança a API pública e por isso compara reimplementações com regex.
 
 Para executar os benchmarks:
 ```bash
+# validadores e auxiliares reais do pacote
+go test . -bench=. -benchmem -run=XXX
+
+# getters públicos, regex vs. manual e boot completo (subprocesso)
 go test ./tests/ -bench=. -benchmem -run=XXX
 ```
 
@@ -117,6 +126,7 @@ go test -short ./tests/
 # 4. Medir cobertura de código real dos subprocessos
 go test ./tests/ -coverpkg=github.com/patrickbrandao/go-loghub-ident
 
-# 5. Verificação estática rigorosa
+# 5. Verificação estática rigorosa (também para o alvo Windows: compila os testes de lá)
 go vet ./...
+GOOS=windows go vet ./...
 ```

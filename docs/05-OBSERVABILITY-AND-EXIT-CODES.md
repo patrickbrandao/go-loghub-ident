@@ -87,7 +87,7 @@ Quando ocorre uma falha irrecuperável, a biblioteca:
 | **102** | `MACHINE_ID` | Formato inválido na variável de ambiente. | Variável `MACHINE_ID` foi definida, mas após remover `-` e espaços não possui exatos 32 caracteres hexadecimais `^[0-9a-f]{32}$`. |
 | **103** | `AGENT_NAME` | Todas as fontes de nome do agente estão vazias. | `AGENT_NAME` ausente, `$DATADIR/agent_name` ausente, e `argv[0]` do binário saneou para vazio, `.` ou separador `/` ou `\`. |
 | **104** | `AGENT_NAME` | Nome do agente inválido. | Valor informado na env, arquivo ou base de `argv[0]` tem mais de 64 caracteres, caracteres fora de `^[a-z0-9._-]+$`, ou é `.` ou `..`. |
-| **105** | `AGENT_UUID` | Falha interna na geração de UUIDv7. | O gerador local de UUID (`go-loghub-uuid`) retornou erro durante a resolução de `AGENT_UUID`. |
+| **105** | `AGENT_UUID` | Falha interna na geração de UUIDv7. | O gerador local de UUID (`go-loghub-uuidv7`) retornou erro durante a resolução de `AGENT_UUID`. Na implementação real a geração não falha: o código é defensivo e só é exercitado pelos testes unitários. |
 | **106** | `AGENT_UUID` | Falha de persistência em disco de `agent_uuid`. | Erro de I/O, disco cheio ou permissão negada ao gravar `$DATADIR/agent_uuid`. |
 | **107** | `AGENT_UUID` | Formato inválido de UUIDv7 canônico. | Variável `AGENT_UUID` ou valor gerado não cumpre `^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`. |
 | **108** | `HOSTNAME` | Chamada ao sistema `os.Hostname()` falhou. | Variável `HOSTNAME` ausente e a chamada nativa do SO retornou erro. |
@@ -95,7 +95,7 @@ Quando ocorre uma falha irrecuperável, a biblioteca:
 | **111** | `WORKSPACE` | Formato inválido de workspace. | Valor da env `WORKSPACE` ou arquivo `$DATADIR/workspace` tem mais de 64 chars, caracteres fora de `^[a-z0-9.-]+$`, ou é `.` ou `..`. |
 | **112** | *(geral)* | Inicialização duplicada detectada. | `Initialize()` foi invocado mais de uma vez no mesmo ciclo de vida do processo (prefixo `geral:`). |
 | **113** | `MACHINE_ID` | Falha de persistência em disco de `machine_id`. | Erro de I/O, disco cheio ou permissão negada ao gravar `$DATADIR/machine_id`. |
-| **114** | `MACHINE_ID` | Falha interna na geração do UUID base do machine-id. | O gerador local de UUID (`go-loghub-uuid`) retornou erro durante a composição do `MACHINE_ID`. |
+| **114** | `MACHINE_ID` | Falha interna na geração do UUID base do machine-id. | O gerador local de UUID (`go-loghub-uuidv7`) retornou erro (ou gerou valor inválido) durante a composição do `MACHINE_ID`. Na implementação real a geração não falha: o código é defensivo e só é exercitado pelos testes unitários. |
 
 ---
 

@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
-	loghubuuid "github.com/patrickbrandao/go-loghub-uuid"
+	uuidv7 "github.com/patrickbrandao/go-loghub-uuidv7"
 )
 
 // maxIdentFileSize limita a leitura de qualquer fonte de identidade. Nenhum
@@ -78,7 +78,7 @@ type system interface {
 	//
 	// A assinatura inclui error para permitir que os testes simulem uma
 	// falha de geração (códigos de saída 105 e 114). A implementação real
-	// nunca retorna erro, pois loghubuuid.GenerateString não falha.
+	// nunca retorna erro, pois uuidv7.GenerateString não falha.
 	GenerateUUIDv7() (string, error)
 }
 
@@ -96,7 +96,30 @@ func (osSystem) Stat(path string) (os.FileInfo, error) { return os.Stat(path) }
 func (osSystem) ReadFile(path string) ([]byte, error) { return readRegular(path, true) }
 
 // ReadFileNoFollow lê um arquivo de $DATADIR sem seguir links.
-func (osSystem) ReadFileNoFollow(path string) ([]byte, error) { return readRegular(path, false) }
+//
+// Um processo irmão pode publicar o arquivo via ReplaceFile (rename atômico)
+// entre o Lstat e o Open, e então o arquivo aberto não é o inspecionado. Isso
+// é troca legítima, não ataque: a leitura é refeita do zero, com validação
+// completa, algumas vezes antes de desistir. Um link plantado continua sendo
+// recusado, porque cada tentativa repete o Lstat.
+func (osSystem) ReadFileNoFollow(path string) ([]byte, error) {
+	var err error
+	for attempt := 0; attempt < maxReplacedRetries; attempt++ {
+		var data []byte
+		data, err = readRegular(path, false)
+		if !errors.Is(err, errReplaced) {
+			return data, err
+		}
+	}
+	return nil, err
+}
+
+// maxReplacedRetries limita as releituras de ReadFileNoFollow quando o arquivo
+// é substituído durante a leitura.
+const maxReplacedRetries = 5
+
+// errReplaced marca um arquivo trocado entre a inspeção e a abertura.
+var errReplaced = fmt.Errorf("%w: arquivo substituído durante a leitura", errInvalidSource)
 
 func readRegular(path string, follow bool) ([]byte, error) {
 	stat := os.Stat
@@ -120,8 +143,14 @@ func readRegular(path string, follow bool) ([]byte, error) {
 		return nil, fmt.Errorf("%w: %s tem %d bytes, acima do limite de %d",
 			errInvalidSource, path, info.Size(), maxIdentFileSize)
 	}
-	f, err := openRegular(path)
+	f, err := openRegular(path, follow)
 	if err != nil {
+		if !follow && isSymlinkRefusal(err) {
+			// O kernel recusou (O_NOFOLLOW): a entrada virou link entre o
+			// Lstat e o Open. Mesma classificação do Lstat, para que o motivo
+			// reportado ao operador seja um só.
+			return nil, fmt.Errorf("%w: %s é um link simbólico", errInvalidSource, path)
+		}
 		return nil, err
 	}
 	defer f.Close()
@@ -139,7 +168,7 @@ func readRegular(path string, follow bool) ([]byte, error) {
 		// um link nesse intervalo, o que abrimos não é o que inspecionamos.
 		if !os.SameFile(info, opened) {
 			return nil, fmt.Errorf("%w: %s mudou entre a inspeção e a abertura",
-				errInvalidSource, path)
+				errReplaced, path)
 		}
 	}
 	// O LimitReader cobre a janela TOCTOU entre o Stat e o Open.
@@ -150,7 +179,10 @@ func readRegular(path string, follow bool) ([]byte, error) {
 // CreateExclusive — que em produção só roda em filesystems sem hard link.
 var linkFile = os.Link
 
-const (
+// claimPoll e claimTTL governam a espera do plano B. São variáveis, e não
+// constantes, apenas para que os testes encurtem a espera; em produção nada
+// as altera.
+var (
 	claimPoll = 20 * time.Millisecond
 	claimTTL  = 10 * time.Second // reivindicação mais velha que isso é de um processo morto
 )
@@ -294,7 +326,9 @@ func (osSystem) Hostname() (string, error) { return os.Hostname() }
 func (osSystem) Args() []string { return os.Args }
 
 // GenerateUUIDv7 gera um UUIDv7 no nível 1 (precisão de milissegundos),
-// o formato padrão e 100% compatível com a RFC 9562.
+// o formato padrão e 100% compatível com a RFC 9562. A entropia vem do gerador
+// do runtime do Go (ChaCha8, semeado pelo sistema operacional): suficiente para
+// identificador, mas o UUIDv7 não é segredo e expõe o instante de criação.
 func (osSystem) GenerateUUIDv7() (string, error) {
-	return loghubuuid.GenerateString(loghubuuid.Level1), nil
+	return uuidv7.GenerateString(uuidv7.Level1), nil
 }

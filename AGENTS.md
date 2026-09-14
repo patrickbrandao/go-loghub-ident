@@ -44,7 +44,7 @@ Aqui está a localização exata de cada arquivo do projeto e suas respectivas r
 | [`SPEC.md`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/SPEC.md) | Sumário executivo da especificação e ponteiro unificado para a suíte canônica em `docs/`. |
 | [`README.md`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/README.md) | Documentação de apresentação da biblioteca, instruções de uso básico, exemplos de compilação multiplataforma e tabelas resumidas. |
 | [`CLAUDE.md`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/CLAUDE.md) | Ponteiro rápido (`@AGENTS.md`) para agentes baseados na CLI Claude/Anthropic. |
-| [`go.mod`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/go.mod) / [`go.sum`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/go.sum) | Módulo Go (versão mínima `go 1.22`). Dependência única: `github.com/patrickbrandao/go-loghub-uuid v0.1.0`. |
+| [`go.mod`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/go.mod) / [`go.sum`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/go.sum) | Módulo Go (versão mínima `go 1.22`). Dependência única: `github.com/patrickbrandao/go-loghub-uuidv7 v0.0.2`. |
 
 ### Subdiretórios
 

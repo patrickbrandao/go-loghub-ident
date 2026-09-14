@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
-	loghubuuid "github.com/patrickbrandao/go-loghub-uuid"
+	uuidv7 "github.com/patrickbrandao/go-loghub-uuidv7"
 )
 
 // maxIdentFileSize limita a leitura de qualquer fonte de identidade. Nenhum
@@ -78,7 +78,7 @@ type system interface {
 	//
 	// A assinatura inclui error para permitir que os testes simulem uma
 	// falha de geração (códigos de saída 105 e 114). A implementação real
-	// nunca retorna erro, pois loghubuuid.GenerateString não falha.
+	// nunca retorna erro, pois uuidv7.GenerateString não falha.
 	GenerateUUIDv7() (string, error)
 }
 
@@ -294,7 +294,9 @@ func (osSystem) Hostname() (string, error) { return os.Hostname() }
 func (osSystem) Args() []string { return os.Args }
 
 // GenerateUUIDv7 gera um UUIDv7 no nível 1 (precisão de milissegundos),
-// o formato padrão e 100% compatível com a RFC 9562.
+// o formato padrão e 100% compatível com a RFC 9562. A entropia vem do gerador
+// do runtime do Go (ChaCha8, semeado pelo sistema operacional): suficiente para
+// identificador, mas o UUIDv7 não é segredo e expõe o instante de criação.
 func (osSystem) GenerateUUIDv7() (string, error) {
-	return loghubuuid.GenerateString(loghubuuid.Level1), nil
+	return uuidv7.GenerateString(uuidv7.Level1), nil
 }

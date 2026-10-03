@@ -1,102 +1,118 @@
-# Guia de Diagnóstico e Resolução de Problemas (Troubleshooting)
+# Diagnóstico e Resolução de Problemas — `go-loghub-ident`
 
-Este documento fornece um guia prático para operadores e desenvolvedores investigarem e resolverem falhas de inicialização, códigos de erro e anomalias de identidade ao utilizar `go-loghub-ident`.
-
----
-
-## 1. Procedimento de Diagnóstico Imediato
-
-Quando um microsserviço entrar em *CrashLoopBackOff* ou falhar ao iniciar:
-
-### Passo 1: Inspecione a Última Linha de `stderr`
-A biblioteca sempre escreve a causa exata na última linha antes de sair:
-```text
-lib-loghub-ident: <VARIÁVEL>: <motivo>
-```
-
-### Passo 2: Ative o Modo Debug do Loghub Ident
-Adicione a variável de ambiente no deployment ou container:
-```bash
-LOGHUB_IDENT_DEBUG=1
-```
-Reinicie o serviço e verifique os logs. As linhas de diagnóstico (uma por campo, mais as de fontes ignoradas) mostrarão exatamente qual fonte alimentou cada campo até o momento da falha:
-```text
-lib-loghub-ident: debug: DATADIR: env = "/data"
-lib-loghub-ident: debug: MACHINE_ID: env = "0123456789abcdef0123456789abcdef"
-lib-loghub-ident: debug: AGENT_NAME: fallback argv[0] = "meu-servico"
-...
-```
+Roteiro para investigar falhas de boot, códigos de saída e mudanças inesperadas de identidade. As mensagens abaixo são as que a biblioteca escreve de fato; caminhos e valores variam.
 
 ---
 
-## 2. Cenários Comuns de Falha e Soluções
+## 1. Roteiro imediato
 
-### Cenário 1: Erro 100 em `DATADIR`
-- **Mensagem típica:** `lib-loghub-ident: DATADIR: caminho relativo não permitido` ou `diretório necessário não existe`.
-- **Causa:**
-  1. Foi informado um caminho relativo (ex.: `DATADIR=./dados` ou `DATADIR=data`).
-  2. O serviço precisa gerar e persistir `machine_id` ou `agent_uuid`, mas o diretório `/data` (ou o caminho configurado) não foi criado ou montado no container.
-  3. O diretório montado possui permissão de somente leitura (`ro`) e não há variáveis explícitas para `MACHINE_ID` e `AGENT_UUID`.
-- **Solução:**
-  - Defina um caminho absoluto (ex.: `DATADIR=/var/lib/myapp`).
-  - No Kubernetes/Docker, assegure que o `volumeMount` está presente e com permissão de escrita (`readOnly: false`).
-  - Para containers estritamente *read-only*, passe **todas** as variáveis de ambiente explicitamente (`MACHINE_ID`, `AGENT_NAME`, `AGENT_UUID`, `HOSTNAME`, `WORKSPACE`).
+Quando o serviço não sobe (ou entra em *CrashLoopBackOff*):
 
-### Cenário 2: Erro 102 em `MACHINE_ID`
-- **Mensagem típica:** `lib-loghub-ident: MACHINE_ID: formato inválido (esperado 32 hexadecimais)`.
-- **Causa:** A variável `MACHINE_ID` foi definida, mas contém caracteres não-hexadecimais, espaços incorretos ou comprimento diferente de 32 caracteres (mesmo após a remoção de hífens).
-- **Solução:**
-  - Verifique o valor da env. Deve conter exatamente 32 dígitos hexadecimais (ex.: `abcdef0123456789abcdef0123456789`).
-
-### Cenário 3: Erro 104 em `AGENT_NAME` ou 111 em `WORKSPACE`
-- **Mensagem típica:** `lib-loghub-ident: AGENT_NAME: valor não cumpre os requisitos` ou `rejeita . e ..`.
-- **Causa:** O nome possui mais de 64 caracteres, caracteres fora de `[a-z0-9._-]`, ou contém `.` ou `..` (tentativa de path traversal). No caso de `WORKSPACE`, o caractere `_` não é permitido.
-- **Solução:**
-  - Use nomes em minúsculo, hífens e números (ex.: `AGENT_NAME=pagamentos-api`, `WORKSPACE=prod-us-east`).
-
-### Cenário 4: Erro 106 ou 113 (Falha de Gravação em Disco)
-- **Mensagem típica:** `lib-loghub-ident: AGENT_UUID: falha ao gravar em disco: no space left on device` ou `permission denied`.
-- **Causa:**
-  - Disco cheio ou quota de inodes esgotada no volume.
-  - O processo roda com um UID que não possui permissão de escrita no diretório montado.
-- **Solução:**
-  - Libere espaço no volume.
-  - Verifique o `securityContext` no Kubernetes (`fsGroup` e permissões do volume montado).
-
-### Cenário 5: Erro 112 (`Initialize() chamado mais de uma vez`)
-- **Mensagem típica:** `lib-loghub-ident: geral: Initialize() chamado mais de uma vez`.
-- **Causa:** O código da aplicação invocou `lhident.Initialize()` duas vezes (ex.: na função `init()` e novamente no `main()`, ou dentro de um handler de reinicialização).
-- **Solução:**
-  - Remova a invocação redundante. `Initialize()` deve ser chamada estritamente uma única vez no início de `main()`.
+1. **Leia o código de saída e a última linha de `stderr`.** Em falha, a biblioteca sempre termina com:
+   ```text
+   lib-loghub-ident: <VARIÁVEL>: <motivo>
+   ```
+   No Kubernetes: `kubectl logs <pod> --previous` e `kubectl get pod <pod> -o jsonpath='{.status.containerStatuses[*].lastState.terminated.exitCode}'`.
+2. **Ligue o diagnóstico** com `LOGHUB_IDENT_DEBUG=1` e reinicie. As linhas `debug:` dos campos já resolvidos saem antes da mensagem de erro e mostram de qual fonte veio cada valor:
+   ```text
+   lib-loghub-ident: debug: DATADIR: env = "/data"
+   lib-loghub-ident: debug: MACHINE_ID: env = "0123456789abcdef0123456789abcdef"
+   lib-loghub-ident: debug: AGENT_NAME: fallback argv[0] = "meu-servico"
+   lib-loghub-ident: AGENT_UUID: gravação em /data/agent_uuid falhou: open /data/.agent_uuid.tmp3588345345: permission denied
+   ```
+3. **Localize o código** na tabela da seção 8 do `SKILL.md` e no cenário correspondente abaixo.
 
 ---
 
-## 3. Investigando Avisos Operacionais (`lib-loghub-ident: aviso:`)
+## 2. Falhas de boot
 
-Aviso típico no log do coletor:
+### 2.1. `DATADIR: "/data" não existe` (100)
+- **Causa:** a biblioteca precisa gerar `machine_id` ou `agent_uuid` e o diretório configurado (ou o padrão `/data`) não existe. É a primeira falha típica em máquina de desenvolvimento e em container sem volume montado.
+- **Correção:** aponte `DATADIR` para um diretório que exista (`DATADIR=/tmp/meu-servico-data`), monte o volume no caminho esperado, ou defina `MACHINE_ID` e `AGENT_UUID` na env para que nada precise ser gravado.
+
+### 2.2. `DATADIR: "dados" é relativo ao diretório de trabalho; use um caminho absoluto` (100)
+- **Causa:** `DATADIR` relativo (`dados`, `./dados`). A identidade não pode mudar conforme o diretório de onde o processo é iniciado.
+- **Correção:** caminho absoluto. Variações da mesma família: `"/data" não é um diretório` (o caminho é um arquivo) e `"/data" inacessível: ...` (permissão negada no diretório pai, erro de I/O).
+
+### 2.3. `MACHINE_ID: gravação em /data/machine_id falhou: ... permission denied` (113) ou `AGENT_UUID: gravação em /data/agent_uuid falhou: ...` (106)
+O processo não consegue criar arquivos em `$DATADIR`. O 113 aparece primeiro quando nenhum dos dois valores vem da env, porque o `MACHINE_ID` é resolvido antes.
+- **Container nonroot com volume do root:** o diretório que `VOLUME ["/data"]` cria numa imagem sem `/data` pertence ao root, e o volume nomeado herda esse dono. Crie `/data` na imagem com o dono do usuário do processo antes do `VOLUME` (veja `examples/docker/Dockerfile`).
+- **Bind mount** (`-v /srv/meu-servico:/data`): o diretório do host precisa pertencer ao UID do container (`chown 65532:65532 /srv/meu-servico` para distroless nonroot).
+- **Kubernetes:** defina `securityContext.fsGroup` no Pod (ex.: `65532`).
+- **Volume read-only** (`readOnly: true`, `:ro`): a leitura de arquivos já existentes funciona; a geração não. Pré-popule `machine_id` e `agent_uuid` ou defina `MACHINE_ID` e `AGENT_UUID`.
+- **`no space left on device`:** libere espaço ou inodes no volume.
+
+### 2.4. `MACHINE_ID: "xyz" não casa com ^[0-9a-f]{32}$` (102)
+- **Causa:** a env `MACHINE_ID` existe, mas, depois de remover hífens e converter para minúsculas, não tem exatamente 32 hexadecimais.
+- **Correção:** 32 caracteres `0-9a-f`. Um UUID qualquer serve (`uuidgen | tr -d -`). Para não fixar, remova a env: a biblioteca usa `/etc/machine-id` ou gera um.
+
+### 2.5. `AGENT_UUID: "a0a2d6e8-b95e-4562-b98b-5283d7c66e1f" não é um UUIDv7 canônico` (107)
+- **Causa:** a env `AGENT_UUID` não é um UUID **versão 7** com hífens. O caso mais comum é um UUIDv4 gerado com `uuidgen`: o primeiro dígito do terceiro grupo é `4`, não `7`.
+- **Correção:** use o `agent_uuid` que a biblioteca gerou num `DATADIR`, gere um UUIDv7 (Python 3.14+: `python3 -c 'import uuid; print(uuid.uuid7())'`), ou remova a env para que a biblioteca gere e persista o valor.
+
+### 2.6. `AGENT_NAME: "meu servico" não casa com ^[a-z0-9._-]+$ (máx. 64 caracteres)` (104) e `WORKSPACE: "prod_us" não casa com ^[a-z0-9.-]+$ (máx. 64 caracteres)` (111)
+- **Causa:** caractere fora do conjunto permitido, mais de 64 caracteres, ou o valor é `.`/`..`. Maiúsculas não são problema (são convertidas). Diferença que mais confunde: `AGENT_NAME` aceita `_`, `WORKSPACE` não.
+- **Se o valor veio de arquivo**, a mensagem é `conteúdo de /data/agent_name (N bytes, hash ...) não casa com ...` — o conteúdo não é reproduzido; inspecione o arquivo.
+- **Se veio de `argv[0]`** (`"x+y" (de argv[0]) não casa com ...`), renomeie o binário ou defina `AGENT_NAME`.
+- **Correção:** `AGENT_NAME=pagamentos-api`, `WORKSPACE=prod-us-east`.
+
+### 2.7. `HOSTNAME: "my_host" não casa com ^[a-z0-9.-]+$ nem com as regras de rótulo da RFC 1123` (109)
+- **Causa:** o hostname da máquina ou a env `HOSTNAME` tem `_`, espaço, ponto final (`host.example.com.`), rótulo vazio ou com mais de 63 caracteres, ou hífen na ponta de um rótulo. Acontece em estações de desenvolvimento e VMs com nomes livres.
+- **Correção:** defina `HOSTNAME` com um nome válido (`HOSTNAME=dev-maria`). Em Docker, `--hostname`.
+
+### 2.8. `DATADIR: leitura de /data/agent_name falhou: fonte de identidade inválida: /data/agent_name é um link simbólico` (100)
+- **Causa:** um arquivo dentro de `$DATADIR` é link simbólico, FIFO, dispositivo ou tem mais de 4 KiB. A recusa impede que um co-inquilino do volume faça o processo ler um arquivo arbitrário do host.
+- **Correção:** substitua o link por um arquivo comum com o valor. O **próprio** `$DATADIR` pode ser um link; só o conteúdo dele não.
+
+### 2.9. `MACHINE_ID_FILE: ...` (100)
+- **Mensagens:** `"etc/machine-id" é relativo ao diretório de trabalho; use um caminho absoluto`, `"/host/machine-id" inacessível: stat /host/machine-id: permission denied`, `leitura de "/host/machine-id" falhou: permission denied`, `"/host" não é um arquivo comum utilizável (...)`.
+- **Causa:** o caminho que o operador indicou explicitamente não pôde ser usado. Um caminho **inexistente** não é erro: a biblioteca registra em debug e usa `/etc/machine-id`.
+- **Correção:** caminho absoluto de um arquivo comum legível, com até 4 KiB.
+
+### 2.10. `geral: Initialize() chamado mais de uma vez` (112)
+- **Causa:** duas chamadas no mesmo processo — `init()` e `main()`, uma biblioteca interna que também inicializa, um handler de reload, ou `Initialize()` dentro de cada `TestXxx`.
+- **Correção:** uma única chamada, no `main()` do binário; em testes, uma no `TestMain` (seção 4 do `SKILL.md`).
+
+### 2.11. Boot demora até 10 segundos
+- **Causa:** `$DATADIR/machine_id` ou `agent_uuid` está **vazio** e foi modificado há menos de 10 s. A biblioteca espera essa janela porque pode ser o arquivo que um processo irmão acabou de publicar num volume de rede (NFS). Um arquivo vazio mais antigo é regenerado sem espera.
+- **Correção:** normalmente nenhuma. Se o arquivo vazio vem de um script de provisionamento (`touch`), remova esse passo.
+
+---
+
+## 3. Identidade inesperada (sem falha)
+
+| Sintoma | Causa provável | Correção |
+| :--- | :--- | :--- |
+| `AgentUUID`/`MachineID` mudam a cada deploy ou reinício | `$DATADIR` não persiste: `emptyDir`, volume anônimo, `docker run --rm` sem volume nomeado. Não há aviso, porque o arquivo está ausente, não corrompido. | Volume nomeado (Docker) ou PVC por instância (Kubernetes). |
+| `Hostname` muda a cada recriação | Docker usa o ID do container como hostname; num Deployment o nome do Pod muda a cada rollout. | `--hostname` no Docker; StatefulSet no Kubernetes. |
+| Todas as réplicas com o mesmo `AgentUUID` | Réplicas montando o mesmo volume gravável (um PVC `ReadWriteMany` num Deployment, um diretório NFS comum). | Um volume por réplica (`volumeClaimTemplates`). |
+| App e sidecar com o mesmo `AgentName` | `AGENT_NAME` ausente e as duas imagens com o mesmo nome de binário (ex.: `/app`). | `AGENT_NAME` em cada container. |
+| `AgentName` é `main`, `app` ou o nome do diretório | Fallback `argv[0]` (`go run main.go`, `ENTRYPOINT ["/app"]`, `go run .`). | Defina `AGENT_NAME`. |
+| Pods no mesmo nó com `MachineID` diferentes | Esperado: em containers o `/etc/machine-id` normalmente não existe e cada volume gera o seu. | Para identificar o nó, monte o `/etc/machine-id` do host (`hostPath`, `readOnly`). |
+| Arquivos `.machine_id.tmp*` ou `*.claim` em `$DATADIR` | Restos de uma gravação interrompida por queda do processo. | Inofensivos; podem ser apagados com o serviço parado. |
+
+---
+
+## 4. Avisos operacionais (`lib-loghub-ident: aviso:`)
+
 ```text
 lib-loghub-ident: aviso: MACHINE_ID: /data/machine_id tinha conteúdo inválido (16 bytes, hash 8f3a1b0c9e7d4a2f) e será substituído (o aviso seguinte diz se foi regenerado ou restaurado de um registro)
 lib-loghub-ident: aviso: MACHINE_ID: /data/machine_id foi REGERADO com valor novo (32 bytes, hash 5d41402abc4b2a76); a identidade desta máquina muda a partir de agora
 ```
 
-### O que significa?
-O arquivo preexistente no volume estava corrompido (tamanho truncado, lixo aleatório ou 0 bytes). A biblioteca descartou os dados inválidos para permitir que o serviço inicializasse com uma nova identidade válida. Se a segunda linha disser `foi RESTAURADO a partir do registro de regeneração`, um processo irmão já tinha regenerado e a identidade anterior foi mantida.
+### O que significa
+O arquivo de identidade no volume estava corrompido (truncado, lixo ou 0 bytes). A biblioteca descartou o conteúdo e o serviço subiu com uma identidade nova. O aviso sai em todo boot que encontrar o problema, com ou sem `LOGHUB_IDENT_DEBUG`.
 
-Um arquivo **vazio** (0 bytes) recebe o mesmo tratamento, com uma diferença: se tiver sido modificado há menos de 10 s, a biblioteca espera o que falta dessa janela antes de decidir, porque pode ser o que um processo irmão acabou de publicar num volume de rede; um arquivo vazio antigo é regenerado na hora.
+Se a segunda linha disser `foi RESTAURADO a partir do registro de regeneração /data/.machine_id.regen`, outro processo já tinha regenerado o valor e ele foi reaproveitado. O registro também pode vir de uma recuperação anterior: quem **esvazia** o arquivo para forçar uma identidade nova recebe de volta o valor do registro. Para uma identidade realmente nova, **apague** o arquivo com o serviço parado; a criação do zero descarta o registro.
 
-### Como Auditar:
-1. O hash informado é um hash **FNV-1a 64-bit** dos bytes corrompidos. Isso permite comparar com backups do volume sem expor segredos em texto claro no log.
-2. Verifique se o host sofreu *hard reboot*, `kill -9` de processos ou problemas no storage compartilhado (NFS/SAN).
-3. Atualize o registro no servidor Loghub para mapear a transição da identidade antiga para a nova.
+### Como auditar
+1. O hash é **FNV-1a 64-bit** dos bytes inválidos: compare com o mesmo arquivo em backups do volume sem expor o conteúdo no log.
+2. Procure a causa da corrupção: *hard reboot*, `kill -9` durante provisionamento, problemas no storage (NFS/SAN), alguém editando o arquivo à mão.
+3. Atualize no servidor Loghub o mapeamento da identidade antiga para a nova.
 
 ---
 
-## 4. Concorrência e Compartilhamento de Volumes
+## 5. Volumes compartilhados
 
-### Containers Principais e Sidecars no Mesmo Pod
-- **Comportamento Esperado:** Ambos montam o mesmo volume `/data`. O primeiro a iniciar cria a identidade com `CreateExclusive`; o segundo adota automaticamente o valor do primeiro via `readSettled`. Ambos reportam exatamente o mesmo `MachineID()` e `AgentUUID()`: nessa topologia o `AgentUUID` identifica a instância (o Pod) e a distinção entre app e sidecar vem do `AgentName()`. Se cada container precisar do seu próprio `AgentUUID`, defina `AGENT_UUID` na env de cada um ou dê a cada um o seu `DATADIR`.
-- **Volume durável:** use um PVC dedicado ao Pod (ou `volumeClaimTemplates`). Um `emptyDir` é apagado na recriação do Pod e a identidade é gerada de novo, sem aviso.
-
-### Réplicas Independentes (ReplicaSet / Deployment)
-- **Atenção:** **Cada Pod do ReplicaSet DEVE ter seu próprio volume dedicado** (usando `volumeClaimTemplates` em um `StatefulSet` ou diretórios segregados por Pod: `/data/pod-0`, `/data/pod-1`).
-- **Problema de Volume Compartilhado:** Se vários Pods independentes montarem o mesmo PVC gravável, eles compartilharão a mesma identidade de agente, causando duplicidade e conflito de telemetria no servidor central Loghub.
+- **App e sidecar no mesmo Pod:** os dois montam o mesmo `/data`. O primeiro a subir cria a identidade; o outro adota o mesmo arquivo, mesmo que suba no mesmo instante. Os dois reportam o mesmo `MachineID()` e `AgentUUID()` — a instância é o Pod — e `AGENT_NAME` os distingue. Se cada container precisar do seu próprio `AgentUUID`, defina `AGENT_UUID` em cada um ou dê a cada um o seu `DATADIR`.
+- **Réplicas independentes:** **cada réplica precisa do seu volume.** Com um volume gravável comum, todas compartilham a identidade e aparecem no servidor Loghub como um único agente. Use `volumeClaimTemplates` num StatefulSet (`examples/kubernetes/statefulset.yaml`).

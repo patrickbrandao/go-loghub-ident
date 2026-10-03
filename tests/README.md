@@ -14,7 +14,8 @@ reais de `osSystem`.
 | `bugs_test.go`      | testes de regressão permanentes (BUG-01 a BUG-16 e PERF-01)              |
 | `bugs2_test.go`     | testes de regressão de persistência durável (BUG-17 e BUG-19)            |
 | `bugs3_test.go`     | arquivo de identidade vazio e janela de estabilização (BUG-23, BUG-20)   |
-| `examples_test.go`  | compila e executa os programas de `../skill/examples/` (feliz, volume, falha) |
+| `examples_test.go`  | compila (via `go.work` temporário) e executa os programas de `../skill/examples/` (feliz, volume, falha) |
+| `skill_test.go`     | a skill funciona fora do repositório: frontmatter, links internos, exemplos sem `replace`, versão coerente |
 | `bench_test.go`     | custo dos getters, da validação (regex vs. manual) e de um boot completo |
 
 ## Como funciona

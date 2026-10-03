@@ -9,11 +9,15 @@
 //	WORKSPACE=production \
 //	go run .
 //
-// Como rodar gerando/persistindo identidade em um volume:
+// Como rodar gerando/persistindo identidade num diretório local (sem DATADIR
+// a biblioteca usa /data, que não existe em máquina de desenvolvimento, e o
+// processo encerra com código 100):
 //
 //	mkdir -p /tmp/mydata
 //	DATADIR=/tmp/mydata WORKSPACE=staging go run .
 //	# machine_id e agent_uuid são gerados e gravados em /tmp/mydata
+//
+// Fora deste repositório, rode "go mod tidy" antes do primeiro "go run".
 //
 // Defina LOGHUB_IDENT_DEBUG=1 para ver a origem de cada valor em stderr.
 package main

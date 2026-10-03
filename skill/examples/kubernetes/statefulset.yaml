@@ -1,0 +1,74 @@
+# Réplicas de um serviço que usa go-loghub-ident.
+#
+# StatefulSet, e não Deployment: cada réplica ganha o seu próprio PVC
+# (volumeClaimTemplates) e um nome estável (loghub-app-0, loghub-app-1, ...),
+# que vira o Hostname. AgentUUID, MachineID e Hostname sobrevivem a rollout,
+# eviction e reagendamento, e nenhuma réplica herda a identidade de outra.
+#
+# Um Deployment com um único PVC montado em todas as réplicas faria todas
+# reportarem o MESMO AgentUUID e MachineID. Um Deployment com emptyDir geraria
+# identidade nova a cada recriação de Pod, com Hostname novo também.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: loghub-app
+spec:
+  serviceName: loghub-app
+  replicas: 3
+  selector:
+    matchLabels:
+      app: loghub-app
+  template:
+    metadata:
+      labels:
+        app: loghub-app
+    spec:
+      # Dá ao GID 65532 (o nonroot das imagens distroless) escrita no volume.
+      securityContext:
+        fsGroup: 65532
+      containers:
+        - name: app
+          image: myregistry.internal/loghub-app:v1.0.0
+          env:
+            - name: DATADIR
+              value: "/data"
+            - name: AGENT_NAME
+              value: "loghub-app"
+            - name: WORKSPACE
+              value: "production"
+          volumeMounts:
+            - name: ident-data
+              mountPath: /data
+            # Opcional: MachineID do NÓ do cluster em vez de um gerado por
+            # volume. Em containers o /etc/machine-id normalmente não existe e
+            # a biblioteca gera o MachineID em $DATADIR. Montando o do host, o
+            # MachineID passa a acompanhar o nó (e muda se o Pod for
+            # reagendado em outro nó). Descomente aqui e em "volumes".
+            # - name: host-machine-id
+            #   mountPath: /etc/machine-id
+            #   readOnly: true
+      # volumes:
+      #   - name: host-machine-id
+      #     hostPath:
+      #       path: /etc/machine-id
+      #       type: File
+  volumeClaimTemplates:
+    - metadata:
+        name: ident-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            # Os arquivos de identidade ocupam poucas dezenas de bytes; use o
+            # mínimo que a sua StorageClass aceita.
+            storage: 100Mi
+---
+# Serviço headless exigido pelo StatefulSet (serviceName acima).
+apiVersion: v1
+kind: Service
+metadata:
+  name: loghub-app
+spec:
+  clusterIP: None
+  selector:
+    app: loghub-app

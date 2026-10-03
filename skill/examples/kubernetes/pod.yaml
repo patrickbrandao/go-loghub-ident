@@ -5,7 +5,8 @@ metadata:
   labels:
     app: loghub-service-demo
 spec:
-  # Garante permissões adequadas no volume compartilhado para usuários nonroot
+  # Dá ao GID 65532 (o nonroot das imagens distroless) escrita no volume. Sem
+  # isso, um processo não-root não grava machine_id/agent_uuid (código 113).
   securityContext:
     fsGroup: 65532
 
@@ -29,9 +30,15 @@ spec:
       env:
         - name: DATADIR
           value: "/data"
+        # AGENT_NAME explícito em cada container: é ele que distingue o app
+        # do sidecar, que compartilham MachineID e AgentUUID (ver abaixo).
+        # Sem ele o nome vem de argv[0] — "app" nas duas imagens, se ambas
+        # usarem a receita de examples/docker/Dockerfile.
+        - name: AGENT_NAME
+          value: "loghub-app"
         - name: WORKSPACE
           value: "production"
-        # Hostname do Pod é resolvido nativamente pelo kernel
+        # HOSTNAME não precisa ser definido: o hostname do container é o nome do Pod.
       volumeMounts:
         - name: ident-data
           mountPath: /data
@@ -50,6 +57,8 @@ spec:
       env:
         - name: DATADIR
           value: "/data"
+        - name: AGENT_NAME
+          value: "loghub-collector"
         - name: WORKSPACE
           value: "production"
       volumeMounts:

@@ -68,14 +68,15 @@ Aqui está a localização exata de cada arquivo do projeto e suas respectivas r
 - **[`skill/`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/skill)**: **Skill Exportável para Agentes de IA e Projetos Consumidores**:
   - [`skill/SKILL.md`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/skill/SKILL.md): Guia unificado de adoção rápida e operação de produção (unificação de DEPLOY-FAST e DEPLOY-FULL).
   - [`skill/references/`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/skill/references): Manuais aprofundados de configuração e troubleshooting.
-  - [`skill/examples/`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/skill/examples): Exemplos práticos em Go, Dockerfile distroless e Pod Kubernetes.
+  - [`skill/examples/`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/skill/examples): Exemplos práticos em Go, Dockerfile distroless nonroot, Pod com sidecar e StatefulSet Kubernetes. O `go.mod` de cada exemplo é o de um consumidor (versão publicada, **sem `replace`**), porque a skill é distribuída sozinha; os testes e o CI compilam contra o checkout via `go.work` temporário.
 - **[`tests/`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/tests)**: Suíte de testes de integração ponta a ponta contra o sistema operacional real via subprocessos.
   - [`tests/helper_test.go`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/tests/helper_test.go): Harness de subprocesso baseado em `TestMain` e `LOGHUB_IDENT_HELPER=1`.
   - [`tests/api_test.go`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/tests/api_test.go): Testes de caminho feliz, precedências e persistência em disco temporário.
   - [`tests/exitcodes_test.go`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/tests/exitcodes_test.go): Validação automatizada de todos os códigos de saída (`100` a `114`).
   - [`tests/bugs_test.go`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/tests/bugs_test.go), [`tests/bugs2_test.go`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/tests/bugs2_test.go) & [`tests/bugs3_test.go`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/tests/bugs3_test.go): Testes de regressão permanentes (`TestFix_BUGxx`); o terceiro cobre o arquivo de identidade vazio (BUG-23) e a janela de estabilização (BUG-20).
   - [`tests/bench_test.go`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/tests/bench_test.go): Benchmarks de alocação e latência dos getters, validadores manuais e ciclo de boot.
-  - [`tests/examples_test.go`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/tests/examples_test.go): Compila e executa os programas de `skill/examples/` (caminho feliz, persistência em volume e falha com código de saída da biblioteca).
+  - [`tests/examples_test.go`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/tests/examples_test.go): Compila (via `go.work` temporário, contra este checkout) e executa os programas de `skill/examples/` (caminho feliz, persistência em volume e falha com código de saída da biblioteca).
+  - [`tests/skill_test.go`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/tests/skill_test.go): Condições de distribuição da skill: frontmatter válido, links que não saem de `skill/`, exemplos sem `replace` e a mesma versão em `SKILL.md`, `README.md` e no `go.mod` dos exemplos.
   - [`tests/doc.go`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/tests/doc.go) & [`tests/README.md`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/tests/README.md): Documentação da suíte de integração.
 - **[`tasks/`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/tasks)**: Registros de auditoria internas e pendências temporárias (pasta não versionada, listada no `.gitignore`).
 
@@ -215,7 +216,12 @@ go vet ./...
 
 ### Testando a Aplicação de Exemplo
 
+O `go.mod` dos exemplos exige a versão publicada. Para rodá-los contra as mudanças locais, crie um workspace (o `go.work` está no `.gitignore`):
+
 ```bash
+go work init ./skill/examples/minimal ./skill/examples/basic
+go work edit -replace=github.com/patrickbrandao/go-loghub-ident=.
+
 # Executar o exemplo mínimo com variáveis explícitas (sem tocar disco)
 cd skill/examples/minimal
 MACHINE_ID=abcdef0123456789abcdef0123456789 \

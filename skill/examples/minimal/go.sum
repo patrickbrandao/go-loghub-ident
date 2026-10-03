@@ -1,2 +1,4 @@
+github.com/patrickbrandao/go-loghub-ident v0.5.2 h1:mVqL/EgOtgF894BojN2P/1sSCqjaiapgfKFzqVtwuX8=
+github.com/patrickbrandao/go-loghub-ident v0.5.2/go.mod h1:KE1D2WMYbn4Sd26YdYRZd4/YMtpomDWK8n4jQmj50Iw=
 github.com/patrickbrandao/go-loghub-uuidv7 v0.0.2 h1:Q2C3H7VT2D1CXzHUF5ot1BjJbnj9MqPv/0XhFbha9HM=
 github.com/patrickbrandao/go-loghub-uuidv7 v0.0.2/go.mod h1:OOq+i0imofp8vKsFarciZxWQ+bbtexeFkNuOiU/wkDk=

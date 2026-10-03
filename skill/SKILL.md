@@ -16,6 +16,21 @@ description: >-
 > **Versão documentada:** `v0.5.2` de [`github.com/patrickbrandao/go-loghub-ident`](https://github.com/patrickbrandao/go-loghub-ident).
 > Se o `go.mod` do projeto exigir outra versão, confira o README dessa tag antes de seguir esta skill.
 
+## Projeto e versão
+
+| Item | Valor |
+| :--- | :--- |
+| Repositório no GitHub | [github.com/patrickbrandao/go-loghub-ident](https://github.com/patrickbrandao/go-loghub-ident) |
+| Caminho do módulo Go | `github.com/patrickbrandao/go-loghub-ident` |
+| Última versão lançada (quando esta skill foi publicada) | `v0.5.2` |
+| Releases e notas de versão | [github.com/patrickbrandao/go-loghub-ident/releases](https://github.com/patrickbrandao/go-loghub-ident/releases) |
+
+Use sempre este módulo — não há fork nem espelho oficial. Para conferir se saiu versão mais nova que a desta skill:
+```bash
+go list -m -versions github.com/patrickbrandao/go-loghub-ident
+```
+Se houver versão mais nova, leia as notas da release antes de atualizar e atualize a skill junto (ela descreve o comportamento da versão documentada).
+
 ## 1. O que a biblioteca resolve
 
 A biblioteca dá ao processo, de forma estável entre reinícios:

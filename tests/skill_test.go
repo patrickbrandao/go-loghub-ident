@@ -222,6 +222,12 @@ func TestSkill_VersionIsConsistent(t *testing.T) {
 			t.Errorf("SKILL.md instala %s@%s; documenta %q", modulePath, got, want)
 		}
 	}
+	latest := regexp.MustCompile("Última versão lançada[^|]*\\| `(v[0-9]+\\.[0-9]+\\.[0-9]+)`").FindSubmatch(data)
+	if latest == nil {
+		t.Error("SKILL.md sem a linha \"Última versão lançada\" na tabela de projeto e versão")
+	} else if got := string(latest[1]); got != want {
+		t.Errorf("SKILL.md anuncia %s como última versão lançada; documenta %q", got, want)
+	}
 	for _, mod := range exampleMods(t) {
 		rel, _ := filepath.Rel(skillDir, mod)
 		if got := requiredVersion(t, mod); got != want {

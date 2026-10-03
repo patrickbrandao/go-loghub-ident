@@ -31,7 +31,7 @@ Antes de criar uma nova tag de versão, execute este checklist obrigatório:
    ```bash
    go vet ./...
    ```
-5. [ ] O número da versão foi atualizado no `require` e nos comandos de instalação e empacotamento da skill do `README.md`, na linha `**Versão documentada:**` e no `go get ...@vX.Y.Z` de `skill/SKILL.md` e no `require` de `skill/examples/*/go.mod`. `TestSkill_VersionIsConsistent` falha se divergirem.
+5. [ ] O número da versão foi atualizado no `require` e nos comandos de instalação e empacotamento da skill do `README.md`, na linha `**Versão documentada:**`, na linha "Última versão lançada" e no `go get ...@vX.Y.Z` de `skill/SKILL.md` e no `require` de `skill/examples/*/go.mod`. `TestSkill_VersionIsConsistent` falha se divergirem.
 6. [ ] Os `go.mod` de `skill/examples/` não têm `replace`: a skill é distribuída sozinha (`TestSkill_ExamplesHaveNoReplace`).
 7. [ ] As alterações foram commitadas e enviadas para o repositório remoto.
 

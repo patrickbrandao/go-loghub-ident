@@ -1,41 +1,63 @@
 package tests
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 )
 
 // Os exemplos de skill/examples são programas completos que consomem a
-// biblioteca pelo caminho de módulo (com replace para este checkout). Compilar
-// e executar cada um garante que a API pública, o go.mod dos exemplos e a
-// dependência de UUID continuam coerentes com o código atual — é o mesmo
-// caminho que um projeto consumidor percorre.
+// biblioteca pelo caminho de módulo. O go.mod deles é o de um consumidor — a
+// versão publicada, sem replace —, porque a skill é distribuída sozinha e um
+// replace relativo quebraria o build fora deste repositório. Para compilar
+// contra ESTE checkout, o teste usa um go.work temporário. Compilar e executar
+// cada um garante que a API pública, o go.mod dos exemplos e a dependência de
+// UUID continuam coerentes com o código atual — é o mesmo caminho que um
+// projeto consumidor percorre.
 
 // examples lista os exemplos que precisam compilar e rodar.
 var examples = []string{"minimal", "basic"}
 
-// buildExample compila o exemplo com o go do PATH e devolve o binário.
+// buildExample compila o exemplo com o go do PATH, num workspace que troca a
+// versão publicada da biblioteca por este checkout, e devolve o binário.
 func buildExample(t *testing.T, name string) string {
 	t.Helper()
 	goBin, err := exec.LookPath("go")
 	if err != nil {
 		t.Skip("binário go ausente no PATH")
 	}
-	dir := filepath.Join("..", "skill", "examples", name)
+	root, err := filepath.Abs("..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, "skill", "examples", name)
 	if _, err := os.Stat(filepath.Join(dir, "go.mod")); err != nil {
 		t.Fatalf("exemplo %s sem go.mod: %v", name, err)
 	}
-	bin := filepath.Join(t.TempDir(), name)
+	tmp := t.TempDir()
+	work := filepath.Join(tmp, "go.work")
+	// replace, e não use, para o checkout: cobre também o intervalo entre o bump
+	// de versão e a tag, quando o go.mod do exemplo exige uma versão ainda não
+	// publicada (um módulo em use ainda teria a versão exigida resolvida).
+	content := fmt.Sprintf("go 1.22\n\nuse %s\n\nreplace %s => %s\n",
+		strconv.Quote(dir), modulePath, strconv.Quote(root))
+	if err := os.WriteFile(work, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(tmp, name)
 	if runtime.GOOS == "windows" {
 		bin += ".exe"
 	}
 	cmd := exec.Command(goBin, "build", "-o", bin, ".")
 	cmd.Dir = dir
-	cmd.Env = os.Environ() // o build precisa de GOPATH/GOCACHE/HOME da máquina
+	// O build precisa de GOPATH/GOCACHE/HOME da máquina; GOWORK por último
+	// para prevalecer sobre um eventual GOWORK do ambiente.
+	cmd.Env = append(os.Environ(), "GOWORK="+work)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("go build do exemplo %s: %v\n%s", name, err, out)
 	}

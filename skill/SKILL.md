@@ -1,50 +1,53 @@
 ---
 name: use-loghub-ident
 description: >-
-  Guia e procedimentos completos para integrar, configurar e operar a biblioteca
-  go-loghub-ident em aplicações e serviços Go no ecossistema Loghub. Use esta skill
-  ao adicionar identificação canônica a novos serviços, configurar variáveis de ambiente
-  e volumes persistentes, estruturar containers Docker/Kubernetes ou diagnosticar
-  falhas e códigos de saída na inicialização.
+  Integra, configura e opera a biblioteca Go github.com/patrickbrandao/go-loghub-ident
+  (lhident), que dá a cada serviço do ecossistema Loghub uma identidade estável
+  (AgentUUID, AgentName, Hostname) e uma localização virtual (MachineID, Workspace).
+  Use ao adicionar a biblioteca a um serviço Go, ao escrever o main() ou os testes
+  de um programa que chama lhident.Initialize(), ao configurar DATADIR, MACHINE_ID,
+  AGENT_NAME, AGENT_UUID, HOSTNAME ou WORKSPACE em Docker e Kubernetes, e ao
+  diagnosticar um processo que encerra com código de saída entre 100 e 114 ou
+  escreve linhas "lib-loghub-ident:" em stderr.
 ---
 
-# Skill: Integração e Operação do `go-loghub-ident`
+# Integração e Operação do `go-loghub-ident`
 
-Esta skill orienta desenvolvedores e agentes de IA a implementar, configurar e operar o identificador canônico de serviços do ecossistema Loghub utilizando a biblioteca Go [`github.com/patrickbrandao/go-loghub-ident`](https://github.com/patrickbrandao/go-loghub-ident) (`lhident`).
+> **Versão documentada:** `v0.5.2` de [`github.com/patrickbrandao/go-loghub-ident`](https://github.com/patrickbrandao/go-loghub-ident).
+> Se o `go.mod` do projeto exigir outra versão, confira o README dessa tag antes de seguir esta skill.
 
----
+## 1. O que a biblioteca resolve
 
-## 1. O que é a biblioteca e por que usá-la?
-
-O objetivo principal da biblioteca é dar a qualquer processo ou microsserviço, de forma estável entre reinícios:
+A biblioteca dá ao processo, de forma estável entre reinícios:
 - uma **identidade única** — *quem* é este agente: `AgentUUID()`, `AgentName()` e `Hostname()`;
 - uma **localização virtual** — *onde* ele está: `MachineID()` e `Workspace()`.
 
-Os seis getters, incluindo o de suporte `DataDir()`:
-- **`DataDir()`**: Diretório raiz de dados persistentes do processo (padrão `/data`). Não é identidade: é onde `machine_id` e `agent_uuid` gerados são gravados.
-- **`MachineID()`**: Identificador de 32 hexadecimais do nó/máquina física ou virtual.
-- **`AgentName()`**: Nome do serviço no ecossistema (máx. 64 caracteres).
-- **`AgentUUID()`**: UUIDv7 temporalmente ordenável único da instância.
-- **`Hostname()`**: Nome do host do sistema em conformidade estrita com a RFC 1123.
-- **`Workspace()`**: Tenant ou namespace lógico do agente (padrão `"default"`).
+API pública completa (pacote `loghubident`, alias convencional `lhident`):
 
-### Características-Chave de Engenharia:
-- **Alta Performance:** Leituras $O(1)$ sem mutexes ou disputa de locks em memória.
-- **Resiliente em Volumes Compartilhados:** Garante convergência atômica entre containers principais e sidecars competindo pelo mesmo volume.
-- **Segurança Reforçada:** Permissão `0644` imune a `umask` restritivo de containers, proteção contra links simbólicos e rejeição a *path traversal*.
-- **Sem Dependência de Regex:** Inicialização ultrarrápida sem importar `regexp`.
+| Símbolo | Retorno | Conteúdo |
+| :--- | :--- | :--- |
+| `Initialize()` | — | Resolve os seis campos. Chamada única; em falha **encerra o processo** (não retorna erro). |
+| `IsInitialized()` | `bool` | `true` depois que `Initialize()` concluiu com sucesso. |
+| `DataDir()` | `string` | Diretório de dados (padrão `/data`). Suporte, não identidade: é onde `machine_id` e `agent_uuid` gerados são gravados. |
+| `MachineID()` | `string` | 32 hexadecimais minúsculos, sem hífen: o nó físico ou virtual. |
+| `AgentName()` | `string` | Nome do serviço, `[a-z0-9._-]`, até 64 caracteres. |
+| `AgentUUID()` | `string` | UUIDv7 canônico com hífens: a instância do agente. |
+| `Hostname()` | `string` | Hostname em minúsculas, válido pela RFC 1123. |
+| `Workspace()` | `string` | Tenant lógico, `[a-z0-9.-]`, até 64 caracteres (padrão `default`). |
+| `DefaultDataDir`, `DefaultMachineIDFile`, `DefaultWorkspace`, `EnvDebug` | `const` | `"/data"`, `"/etc/machine-id"`, `"default"`, `"LOGHUB_IDENT_DEBUG"`. |
+
+Os getters são leituras de memória O(1), sem locks, seguras para qualquer número de goroutines depois de `Initialize()`. `AgentName()` e `Workspace()` nunca contêm `/` nem são `.` ou `..`: são seguros para compor caminhos, tópicos e chaves.
 
 ---
 
-## 2. Início Rápido em 2 Minutos
+## 2. Início rápido
 
-### Passo 1: Adicionar a Dependência
+### Passo 1: adicionar a dependência (Go 1.22+)
 ```bash
-go get github.com/patrickbrandao/go-loghub-ident
+go get github.com/patrickbrandao/go-loghub-ident@v0.5.2
 ```
-> **Requisito:** Go 1.22 ou superior.
 
-### Passo 2: Inicializar no Ponto de Entrada da Aplicação (`main.go`)
+### Passo 2: inicializar no `main()`
 ```go
 package main
 
@@ -55,99 +58,136 @@ import (
 )
 
 func main() {
-	// 1. OBRIGATÓRIO: Chamar Initialize() no topo de main(), antes de criar goroutines
+	// Antes de abrir recursos com defer e antes de criar goroutines.
+	// Em qualquer falha, escreve o motivo em stderr e encerra o processo.
 	lhident.Initialize()
 
-	// 2. Os getters agora podem ser lidos concorrentemente em qualquer lugar
-	fmt.Printf("Identidade do Serviço:\n")
-	fmt.Printf("  DataDir:   %s\n", lhident.DataDir())
-	fmt.Printf("  MachineID: %s\n", lhident.MachineID())
-	fmt.Printf("  AgentName: %s\n", lhident.AgentName())
-	fmt.Printf("  AgentUUID: %s\n", lhident.AgentUUID())
-	fmt.Printf("  Hostname:  %s\n", lhident.Hostname())
-	fmt.Printf("  Workspace: %s\n", lhident.Workspace())
+	fmt.Println("DataDir:  ", lhident.DataDir())
+	fmt.Println("MachineID:", lhident.MachineID())
+	fmt.Println("AgentName:", lhident.AgentName())
+	fmt.Println("AgentUUID:", lhident.AgentUUID())
+	fmt.Println("Hostname: ", lhident.Hostname())
+	fmt.Println("Workspace:", lhident.Workspace())
 }
 ```
 
-### Passo 3: Execução Rápida
+### Passo 3: rodar localmente
 
-#### Cenário A: Caminho Feliz via Variáveis (Sem Tocar Disco / Read-Only Filesystem)
-Ideal para containers efêmeros e ambientes serverless:
+> **Atenção:** sem `DATADIR`, a biblioteca usa `/data`, que não existe em máquinas de desenvolvimento (e não pode ser criado no macOS). Se ela precisar gerar uma identidade, o processo encerra com `lib-loghub-ident: DATADIR: "/data" não existe` e **código 100**. Use um dos cenários abaixo.
+
+**Cenário A — tudo via env, sem tocar o disco** (testes, containers read-only, serverless):
 ```bash
 MACHINE_ID=abcdef0123456789abcdef0123456789 \
 AGENT_NAME=my-service \
 AGENT_UUID=019e99e3-42f0-7882-9719-2305ff84949c \
 HOSTNAME=node01 \
 WORKSPACE=production \
-go run main.go
+go run .
 ```
 
-#### Cenário B: Identidade Persistente em Volume
-A biblioteca gera localmente o `machine_id` e o `agent_uuid` na 1ª execução e os reutiliza estavelmente nas reinicializações:
+**Cenário B — identidade gerada e persistida num diretório local:**
 ```bash
-mkdir -p /tmp/mydata
-DATADIR=/tmp/mydata WORKSPACE=staging go run main.go
+mkdir -p /tmp/my-service-data
+DATADIR=/tmp/my-service-data AGENT_NAME=my-service go run .
 ```
+Na primeira execução `machine_id` e `agent_uuid` são gerados e gravados em `/tmp/my-service-data`; nas seguintes, reutilizados. Sem `AGENT_NAME`, o nome vem do executável: `go run .` usa o nome do diretório do pacote e `go run main.go` usa `main`.
 
 ---
 
-## 3. Contrato de Ciclo de Vida e Concorrência
+## 3. Regras de integração
+
+Siga estas regras ao escrever ou revisar código que usa a biblioteca:
+
+1. **Somente no `main()` do binário, uma única vez.** Nunca em `init()`, em pacote de biblioteca, em handler, em retry ou em teste individual. Uma segunda chamada no mesmo processo encerra com **código 112**. Pacotes compartilhados apenas leem os getters; se precisarem se proteger de uso sem inicialização, consultem `lhident.IsInitialized()`.
+2. **Ordem dentro do `main()`:** trate primeiro as flags que encerram o programa sem precisar de identidade (`--version`, `--help`); depois chame `Initialize()`; só então abra arquivos, conexões e outros recursos com `defer`, e crie goroutines.
+3. **Não há erro para tratar.** Em falha, `Initialize()` chama `os.Exit` com um código entre 100 e 114: `defer` não roda e `recover` não captura. Não envolva a chamada em lógica de fallback; corrija a configuração.
+4. **Getters antes de `Initialize()` devolvem `""`.** Não leia identidade em `init()` nem em variáveis globais inicializadas em tempo de carga do pacote.
+5. **Barreira *happens-before*:** goroutines criadas depois de `Initialize()` retornar leem os getters sem sincronização. Não adicione mutex nem cache em volta deles.
+6. **Defina `AGENT_NAME` explicitamente em containers.** O fallback é o nome base de `argv[0]` — `/app` vira `app` em toda imagem que usa esse caminho.
+7. **Não escreva nos arquivos gerenciados** (`$DATADIR/machine_id`, `$DATADIR/agent_uuid`, `.*.regen`). Para fixar um valor, use a variável de ambiente correspondente; para trocar a identidade, siga a seção 6.
 
 ```mermaid
 flowchart TD
-    MainStart["Início de main()"] --> InitCall["lhident.Initialize()"]
-    InitCall --> CheckCAS{"Primeira chamada?<br>(atomic.Bool CAS)"}
-    CheckCAS -- Não --> Exit112["Escreve stderr e os.Exit(112)"]
-    CheckCAS -- Sim --> Resolve["Resolve os 6 campos e grava persistências"]
-    Resolve --> ReturnInit["Retorna com sucesso"]
-    ReturnInit --> SpawnGoroutines["Disparo de Goroutines de Trabalho<br>(Barreira Happens-Before)"]
-    SpawnGoroutines --> SafeGetters["Leitura concorrente segura dos Getters<br>(O(1) sem locks)"]
+    Flags["Flags que encerram<br>(--version, --help)"] --> Init["lhident.Initialize()"]
+    Init -->|falha| Exit["stderr + os.Exit(100..114)<br>defers não rodam"]
+    Init -->|sucesso| Res["Recursos com defer<br>(arquivos, conexões)"]
+    Res --> Go["Goroutines de trabalho<br>leem os getters sem locks"]
 ```
 
-1. **Chamada Única:** Invoque `Initialize()` **apenas uma vez**. Uma segunda chamada no mesmo processo é detectada atomicamente e encerra o processo com **código de saída 112**.
-2. **Barreira *Happens-Before*:** `Initialize()` deve concluir **antes** do disparo de goroutines que leem os getters. A criação das goroutines estabelece a sincronização de memória necessária para leitura sem locks.
-3. **Imutabilidade Absoluta:** Uma vez inicializados, os valores nunca mais mudam durante a vida do processo.
+---
+
+## 4. Testes no projeto consumidor
+
+Cada pacote de teste é um processo próprio: chame `Initialize()` **uma vez**, no `TestMain`, com as cinco variáveis de identidade definidas. Assim a biblioteca não toca o disco e os valores são determinísticos:
+
+```go
+func TestMain(m *testing.M) {
+	for k, v := range map[string]string{
+		"MACHINE_ID": "0123456789abcdef0123456789abcdef",
+		"AGENT_NAME": "my-service-test",
+		"AGENT_UUID": "019e99e3-42f0-7882-9719-2305ff84949c",
+		"HOSTNAME":   "test-host",
+		"WORKSPACE":  "test",
+	} {
+		os.Setenv(k, v)
+	}
+	lhident.Initialize()
+	os.Exit(m.Run())
+}
+```
+
+- Não chame `Initialize()` dentro de `TestXxx` nem use `t.Setenv` para variar a identidade: a segunda chamada derruba o binário de teste inteiro com código 112.
+- Para testar comportamentos com identidades diferentes, faça o código receber os valores como parâmetros (ou um struct) preenchidos no `main()` a partir dos getters, e teste esse código sem a biblioteca.
 
 ---
 
-## 4. Tabela de Referência de Variáveis de Ambiente
+## 5. Variáveis de ambiente
 
-| Variável | Campo Afetado | Padrão / Fallback | Regras de Formato e Validação |
+Os campos são resolvidos nesta ordem, e a primeira falha encerra o processo: `DATADIR` → `MACHINE_ID` → `AGENT_NAME` → `AGENT_UUID` → `HOSTNAME` → `WORKSPACE`. Todo valor (env ou arquivo) passa pelo mesmo saneamento: primeira linha, sem BOM UTF-8, sem espaços e caracteres de controle nas bordas, em minúsculas.
+
+| Variável | Campo | Fontes, em ordem | Regras |
 | :--- | :--- | :--- | :--- |
-| `DATADIR` | `DataDir()` | `/data` | **Caminho absoluto obrigatório** (iniciado por `/` no Unix ou letra de unidade no Windows). Não pode conter caracteres de controle. Normalizado via `filepath.Clean`. |
-| `MACHINE_ID` | `MachineID()` | `$MACHINE_ID_FILE` ou `$DATADIR/machine_id` ou gerado via UUIDv7 | Sequência de 32 hexadecimais `^[0-9a-f]{32}$`. Hífens inseridos são removidos automaticamente. |
-| `MACHINE_ID_FILE` | `MachineID()` | `/etc/machine-id` | Caminho do arquivo de identidade do SO. Se informado, deve ser absoluto, acessível e menor que 4 KiB. |
-| `AGENT_NAME` | `AgentName()` | `$DATADIR/agent_name` ou base de `argv[0]` | 1 a 64 caracteres em `^[a-z0-9._-]+$`. **Rejeita expressamente `.` e `..`** (proteção contra path traversal). |
-| `AGENT_UUID` | `AgentUUID()` | `$DATADIR/agent_uuid` ou gerado via UUIDv7 | UUIDv7 canônico com hífens RFC 9562 (`^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`). |
-| `HOSTNAME` | `Hostname()` | Chamada `os.Hostname()` | Padrão RFC 1123: máx. 253 chars, rótulos de 1 a 63 chars sem hífens nas extremidades. |
-| `WORKSPACE` | `Workspace()` | `$DATADIR/workspace` ou `"default"` | 1 a 64 caracteres em `^[a-z0-9.-]+$`. **Rejeita `.` e `..` e não aceita `_`**. |
-| `LOGHUB_IDENT_DEBUG` | Diagnóstico | Vazio (desativado) | Qualquer valor não-vazio (`"1"`) ativa a emissão de uma linha de diagnóstico por campo (mais as de fontes ignoradas) em `stderr`. |
+| `DATADIR` | `DataDir()` | env → `/data` | Caminho absoluto, sem caracteres de controle; normalizado com `filepath.Clean`. Só precisa existir quando algo é lido de lá ou uma identidade é gerada. Pode ser um link simbólico para o volume real. |
+| `MACHINE_ID` | `MachineID()` | env → `$MACHINE_ID_FILE` → `$DATADIR/machine_id` → gerado | 32 hexadecimais; hífens são removidos (`uuidgen \| tr -d -` serve). Env inválida → 102. |
+| `MACHINE_ID_FILE` | `MachineID()` | env → `/etc/machine-id` | Absoluto, arquivo comum, até 4 KiB. Arquivo **inexistente** não é erro: usa `/etc/machine-id`. Conteúdo inválido cai para o próximo nível. |
+| `AGENT_NAME` | `AgentName()` | env → `$DATADIR/agent_name` → base de `argv[0]` sem `.exe` | `[a-z0-9._-]`, 1 a 64 caracteres, nunca `.` ou `..`. |
+| `AGENT_UUID` | `AgentUUID()` | env → `$DATADIR/agent_uuid` → gerado | UUID **versão 7** canônico, 36 caracteres. UUIDv4 (o que `uuidgen` produz) é recusado com 107. |
+| `HOSTNAME` | `Hostname()` | env → `os.Hostname()` | RFC 1123: até 253 caracteres, rótulos de 1 a 63 em `[a-z0-9-]` sem hífen nas bordas. `_`, espaço e ponto final (`host.`) são recusados. |
+| `WORKSPACE` | `Workspace()` | env → `$DATADIR/workspace` → `"default"` | `[a-z0-9.-]`, 1 a 64 caracteres, nunca `.` ou `..`. **Não aceita `_`.** |
+| `LOGHUB_IDENT_DEBUG` | — | — | Qualquer valor não vazio liga o diagnóstico (inclusive `0` e `false`). |
+
+Para fixar um `AGENT_UUID` via env, copie o `agent_uuid` que a biblioteca gerou num `DATADIR`, ou gere um UUIDv7 (por exemplo, Python 3.14+: `python3 -c 'import uuid; print(uuid.uuid7())'`).
 
 ---
 
-## 5. Gestão de Volumes e Persistência em Disco
+## 6. Volumes e persistência
 
-### Arquivos Gerenciados em `$DATADIR`:
-- `machine_id`: 32 hexadecimais em lowercase. Permissão `0644`.
-- `agent_uuid`: UUIDv7 canônico RFC 9562 com hífens. Permissão `0644`.
-- `agent_name`: Arquivo estático opcional (apenas leitura pela biblioteca).
-- `workspace`: Arquivo estático opcional (apenas leitura pela biblioteca).
-- `.machine_id.regen` e `.agent_uuid.regen`: Registros ocultos de arbitragem de recuperação concorrente.
+### Arquivos em `$DATADIR`
+- `machine_id`, `agent_uuid`: gerados pela biblioteca, uma linha, permissão `0644`, gravação atômica com `fsync`.
+- `agent_name`, `workspace`: opcionais, escritos pelo operador; a biblioteca só lê.
+- `.machine_id.regen`, `.agent_uuid.regen`: registros da recuperação concorrente de um arquivo corrompido.
 
-### Regras Críticas de Operação de Volumes:
-1. **Gravação Atômica e Durável:** As gravações usam arquivos temporários com `fchmod(0644)`, `fsync` do arquivo e `fsync` do diretório pai. Quedas de energia não deixam arquivos corrompidos de 0 bytes.
-2. **Convergência entre Sidecars:** Containers que compartilham intencionalmente o mesmo `$DATADIR` (ex.: container de aplicação e sidecar de coleta de logs no mesmo Pod) convergem automaticamente para os mesmos IDs via criação exclusiva (`CreateExclusive`). Nessa topologia o `AgentUUID` identifica a **instância** (o Pod); a distinção entre app e sidecar vem do `AgentName`. Se cada container precisar do seu próprio `AgentUUID`, defina `AGENT_UUID` na env de cada um ou dê a cada um o seu `DATADIR`.
-3. **Isolamento entre Réplicas:** **NUNCA compartilhe o mesmo volume gravável `$DATADIR` entre Pods ou servidores distintos.** Isso causaria colisão de `machine_id` e `agent_uuid`, gerando duplicações no servidor Loghub.
-4. **Proteção contra Symlinks:** A biblioteca recusa links simbólicos dentro de `$DATADIR` (`ReadFileNoFollow`) com código 100 para impedir exfiltração de arquivos do host.
-5. **Arquivo de identidade vazio:** um `machine_id` ou `agent_uuid` vazio (touch de provisionamento, cópia interrompida) é tratado como corrompido: aviso em `stderr` e regeneração. Se o arquivo tiver sido modificado há menos de 10 s, a biblioteca espera o que falta dessa janela antes de decidir, porque pode ser o que um irmão acabou de publicar num volume de rede; um arquivo vazio antigo é regenerado na hora.
-6. **Volume durável:** a identidade só é estável se o volume sobreviver à recriação do container ou do Pod: volume nomeado no Docker (`docker run -v loghub-ident:/data ...`) e PVC dedicado (ou `volumeClaimTemplates`) no Kubernetes. `emptyDir` e volumes anônimos são apagados na recriação, e a biblioteca gera identidades novas sem aviso, porque não há arquivo corrompido, apenas ausente.
+Arquivos dentro de `$DATADIR` não podem ser links simbólicos, FIFOs ou ter mais de 4 KiB: a biblioteca recusa com **código 100** (proteção contra exfiltração de arquivos do host).
+
+### Regras de operação
+1. **Volume durável:** a identidade só é estável se o volume sobreviver à recriação do container. Docker: volume **nomeado** (`-v meu-servico-ident:/data`). Kubernetes: PVC por Pod, ou `volumeClaimTemplates` num StatefulSet. `emptyDir`, volumes anônimos e `--rm` sem volume nomeado geram identidade nova a cada recriação, **sem aviso** (o arquivo está ausente, não corrompido).
+2. **Escrita pelo usuário do processo:** em imagens nonroot, o diretório precisa pertencer ao UID/GID do processo (veja o Dockerfile de exemplo) ou o Pod precisa de `securityContext.fsGroup`. Sem isso, a primeira geração falha com **113** (`permission denied`).
+3. **Um volume por instância:** **nunca** monte o mesmo `$DATADIR` gravável em réplicas ou servidores distintos — todos reportariam o mesmo `AgentUUID` e `MachineID`.
+4. **Sidecars no mesmo Pod:** containers que compartilham de propósito o mesmo `$DATADIR` convergem para o mesmo `MachineID` e o mesmo `AgentUUID` (a instância é o Pod); `AGENT_NAME` distingue cada um. Se cada container precisar do seu próprio `AgentUUID`, defina `AGENT_UUID` em cada um ou dê a cada um o seu `DATADIR`.
+5. **Volume read-only:** funciona se `machine_id` e `agent_uuid` já existirem válidos no volume. Caso contrário, defina `MACHINE_ID` e `AGENT_UUID` na env; sem eles, a geração falha com 113 ou 106.
+
+### Trocar a identidade de propósito
+Pare todos os processos que usam o volume, **apague** `$DATADIR/agent_uuid` (e/ou `machine_id`) e reinicie. Não esvazie o arquivo: arquivo vazio é tratado como corrompido e a biblioteca restaura o valor do registro `.regen`, se houver. A criação do zero descarta o registro antigo.
+
+### Arquivo corrompido ou vazio
+Conteúdo inválido (truncado, lixo, 0 bytes) gera aviso em `stderr` e uma identidade nova (seção 7.2). Um arquivo vazio modificado há menos de 10 s ainda é aguardado até completar essa janela, porque pode ser o que um processo irmão acabou de publicar num volume de rede; um vazio antigo é regenerado na hora.
 
 ---
 
-## 6. Observabilidade e Monitoramento
+## 7. Observabilidade
 
-### 6.1. Depuração com `LOGHUB_IDENT_DEBUG=1`
-Ao ativar a variável de depuração, o processo emite uma linha por campo em `stderr` (seis), precedidas, quando houver, por linhas de diagnóstico sobre fontes ignoradas, tudo antes de qualquer execução ou falha:
+### 7.1. Diagnóstico com `LOGHUB_IDENT_DEBUG=1`
+Escreve em `stderr` uma linha por campo resolvido (seis), precedidas, quando houver, por linhas sobre fontes ignoradas. Em falha, as linhas dos campos já resolvidos saem antes da mensagem de erro:
 ```text
 lib-loghub-ident: debug: DATADIR: env = "/data"
 lib-loghub-ident: debug: MACHINE_ID: file /etc/machine-id = "0123456789abcdef0123456789abcdef"
@@ -156,71 +196,67 @@ lib-loghub-ident: debug: AGENT_UUID: generated = "018f3a5b-7c8d-7e9f-8a1b-2c3d4e
 lib-loghub-ident: debug: HOSTNAME: os.Hostname = "node01.example.com"
 lib-loghub-ident: debug: WORKSPACE: fallback = "default"
 ```
+Sem a variável, um boot sem incidentes não escreve nada em `stdout` nem em `stderr`.
 
-### 6.2. Alarme Operacional Obrigatório (`lib-loghub-ident: aviso:`)
-Se um arquivo persistido em `$DATADIR` for encontrado com conteúdo corrompido (ou vazio), a biblioteca regenera a identidade e emite dois avisos compulsórios em `stderr`:
+### 7.2. Aviso operacional (`lib-loghub-ident: aviso:`)
+Emitido **sempre** que uma identidade persistida é descartada:
 ```text
 lib-loghub-ident: aviso: MACHINE_ID: /data/machine_id tinha conteúdo inválido (16 bytes, hash 8f3a1b0c9e7d4a2f) e será substituído (o aviso seguinte diz se foi regenerado ou restaurado de um registro)
 lib-loghub-ident: aviso: MACHINE_ID: /data/machine_id foi REGERADO com valor novo (32 bytes, hash 5d41402abc4b2a76); a identidade desta máquina muda a partir de agora
 ```
-Quando um processo irmão já regenerou (registro `.machine_id.regen`), a segunda linha diz `foi RESTAURADO a partir do registro de regeneração` e a identidade anterior é mantida.
-> **Ação Recomendada:** Configure alertas no seu agregador de logs (ex.: Datadog, CloudWatch, Loki) para a string `lib-loghub-ident: aviso:`. Essa linha indica que o nó trocou de identidade física, o que pode impactar faturamento de licenças por host e continuidade de séries temporais.
+Se um processo irmão já tinha regenerado, a segunda linha diz `foi RESTAURADO a partir do registro de regeneração` e o valor registrado é mantido. O hash é FNV-1a 64-bit: identifica o conteúdo sem reproduzi-lo.
+
+> **Recomendação:** crie um alerta no agregador de logs para `lib-loghub-ident: aviso:`. A linha indica que a identidade daquele nó ou agente mudou, o que quebra a continuidade de séries temporais e de qualquer registro chaveado por ela.
 
 ---
 
-## 7. Diagnóstico Rápido de Códigos de Saída (Exit Codes)
+## 8. Códigos de saída
 
-Se o processo encerrar durante o boot com código entre 100 e 114, consulte esta tabela:
+Em falha, a última linha de `stderr` é `lib-loghub-ident: <VARIÁVEL>: <motivo>`.
 
-| Código | Variável | Significado | Como Corrigir |
+| Código | Variável | Causa | Correção |
 | :---: | :--- | :--- | :--- |
-| **100** | `DATADIR` | Caminho relativo, inexistente na escrita, não é diretório ou symlink recusado. | Configure `DATADIR` como caminho absoluto (ex.: `/var/lib/myapp`), monte o volume como diretório real e assegure permissões de leitura/escrita. |
-| **100** | `MACHINE_ID_FILE` | Caminho explícito relativo, inacessível, FIFO ou > 4 KiB. | Verifique se o caminho informado em `MACHINE_ID_FILE` é absoluto, arquivo comum regular e possui permissão de leitura. |
-| **102** | `MACHINE_ID` | Formato não hexadecimal ou comprimento != 32. | Forneça 32 caracteres hexadecimais `0-9a-f` (com ou sem hífens). |
-| **103** | `AGENT_NAME` | Todas as fontes de nome do agente vazias. | Defina `AGENT_NAME` na env ou passe um nome de executável válido. |
-| **104** | `AGENT_NAME` | Nome contém caracteres inválidos, > 64 chars ou é `.` / `..`. | Use apenas letras minúsculas, números, ponto, hífen e sublinhado (`[a-z0-9._-]`). |
-| **105** | `AGENT_UUID` | Falha interna na geração de UUIDv7. | Não ocorre com o gerador atual (`go-loghub-uuidv7` não retorna erro). Se aparecer, trate como defeito da biblioteca. |
-| **106** | `AGENT_UUID` | Falha de gravação no volume `$DATADIR/agent_uuid`. | Verifique espaço em disco, quota de inodes e permissões de escrita em `$DATADIR`. |
-| **107** | `AGENT_UUID` | Valor não é um UUIDv7 canônico com hífens. | Corrija o valor de `AGENT_UUID` para o padrão RFC 9562 (36 caracteres). |
-| **108** | `HOSTNAME` | Chamada ao sistema `os.Hostname()` falhou. | Configure a variável de ambiente `HOSTNAME` explicitamente. |
-| **109** | `HOSTNAME` | Hostname não atende à RFC 1123. | Ajuste o hostname para conter apenas `[a-z0-9.-]`, sem hífens nas bordas dos rótulos e máx. 253 caracteres. |
-| **111** | `WORKSPACE` | Workspace inválido (> 64 chars, caracteres inválidos ou `.`/`..`). | Ajuste `WORKSPACE` para conter apenas `[a-z0-9.-]` (não use `_`). |
-| **112** | `geral` | `Initialize()` chamado mais de uma vez. | Remova invocações duplicadas de `lhident.Initialize()` no seu código Go. |
-| **113** | `MACHINE_ID` | Falha de gravação no volume `$DATADIR/machine_id`. | Verifique permissões de escrita e espaço no disco em `$DATADIR`. |
-| **114** | `MACHINE_ID` | Falha interna na geração de UUID para machine-id. | Não ocorre com o gerador atual (`go-loghub-uuidv7` não retorna erro). Se aparecer, trate como defeito da biblioteca. |
+| **100** | `DATADIR` | Caminho relativo ou com caractere de controle; não existe quando é preciso gravar uma identidade gerada; não é diretório; erro de I/O; arquivo em `$DATADIR` é link simbólico, FIFO ou passa de 4 KiB. | Caminho absoluto de um diretório que existe (ou `MACHINE_ID` e `AGENT_UUID` na env, que dispensam gravação); arquivos comuns no lugar de links. |
+| **100** | `MACHINE_ID_FILE` | Caminho relativo ou com controle, inacessível (permissão, I/O), não é arquivo comum ou passa de 4 KiB. | Caminho absoluto de um arquivo comum legível. |
+| **102** | `MACHINE_ID` | Env presente que não tem 32 hexadecimais depois de remover hífens. | 32 caracteres `0-9a-f`, com ou sem hífens. |
+| **103** | `AGENT_NAME` | Env vazia, `agent_name` ausente e `argv[0]` sem nome base. | Defina `AGENT_NAME`. |
+| **104** | `AGENT_NAME` | Env, arquivo ou base de `argv[0]` fora de `[a-z0-9._-]`, mais de 64 caracteres, ou `.`/`..`. | Ajuste o nome ou defina `AGENT_NAME`. |
+| **105** | `AGENT_UUID` | Falha na geração do UUIDv7. | Não ocorre com o gerador atual; trate como defeito da biblioteca. |
+| **106** | `AGENT_UUID` | Gravação de `$DATADIR/agent_uuid` falhou: volume read-only, sem permissão para o UID do processo, disco ou inodes cheios. | Permissão de escrita (dono do diretório, `fsGroup`) e espaço no volume, ou defina `AGENT_UUID`. |
+| **107** | `AGENT_UUID` | Valor não é UUIDv7 canônico (UUIDv4, sem hífens, versão errada). | Use um UUIDv7 (seção 5). |
+| **108** | `HOSTNAME` | Env vazia e `os.Hostname()` falhou. | Defina `HOSTNAME`. |
+| **109** | `HOSTNAME` | Fora da RFC 1123: `_`, espaço, ponto final, rótulo vazio ou com mais de 63 caracteres, hífen na borda, mais de 253 caracteres. | Defina `HOSTNAME` com um nome válido. |
+| **111** | `WORKSPACE` | Env ou arquivo fora de `[a-z0-9.-]`, mais de 64 caracteres, ou `.`/`..`. | Use hífen no lugar de `_`. |
+| **112** | `geral` | `Initialize()` chamado mais de uma vez no processo. | Deixe uma única chamada, no `main()` (seção 3). |
+| **113** | `MACHINE_ID` | Gravação de `$DATADIR/machine_id` falhou — tipicamente container nonroot com volume do root, ou volume read-only. | Mesmas correções do 106, ou defina `MACHINE_ID`. |
+| **114** | `MACHINE_ID` | Falha na geração do UUIDv7 base do machine-id. | Não ocorre com o gerador atual; trate como defeito da biblioteca. |
+
+Mensagens reais de cada caso e o roteiro de diagnóstico: [references/troubleshooting.md](references/troubleshooting.md).
 
 ---
 
-## 8. Receitas de Implantação Prontas
+## 9. Implantação
 
-### 8.1. Dockerfile Distroless Multi-Stage
-Veja a receita completa em [`examples/docker/Dockerfile`](./examples/docker/Dockerfile).
+### 9.1. Docker
+Receita completa e comentada em [examples/docker/Dockerfile](examples/docker/Dockerfile): build multi-arquitetura, imagem distroless nonroot, `/data` pertencente ao usuário nonroot e `AGENT_NAME` definido. Pontos que a receita resolve e que um Dockerfile próprio precisa repetir:
+- `/data` criado na imagem com dono `65532:65532` antes de `VOLUME`; sem isso, o primeiro `docker run` com volume nomeado encerra com 113.
+- `AGENT_NAME` definido; senão o nome vem do binário (`/app` → `app`).
+- `--hostname` no `docker run` (ou `hostname:` no Compose): sem ele, o `Hostname()` é o ID do container e muda a cada recriação.
+- `WORKSPACE` vem do ambiente de execução, não da imagem.
 
-```dockerfile
-FROM golang:1.22 AS build
-WORKDIR /src
-COPY go.mod go.sum ./
-RUN go mod download
-COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /out/app .
-
-FROM gcr.io/distroless/static-debian12
-COPY --from=build /out/app /app
-# Monte um volume NOMEADO (docker run -v loghub-ident:/data ...): o volume
-# anônimo que VOLUME cria é descartado ao recriar o container.
-VOLUME ["/data"]
-ENV WORKSPACE=production
-ENTRYPOINT ["/app"]
-```
-
-### 8.2. Kubernetes Pod (Compartilhamento entre Aplicação e Sidecar)
-Veja o manifesto completo em [`examples/kubernetes/pod.yaml`](./examples/kubernetes/pod.yaml). O volume é um PVC dedicado: um `emptyDir` seria apagado na recriação do Pod e a identidade seria gerada de novo. App e sidecar convergem para o mesmo `MachineID` e o mesmo `AgentUUID` (a instância é o Pod); a distinção entre eles vem do `AgentName`.
+### 9.2. Kubernetes
+- **Réplicas:** [examples/kubernetes/statefulset.yaml](examples/kubernetes/statefulset.yaml). StatefulSet com `volumeClaimTemplates` dá a cada réplica o seu PVC e um hostname estável (`<nome>-0`, `<nome>-1`, ...). Num Deployment, réplicas que montam o mesmo PVC compartilham a identidade, e com `emptyDir` ela é gerada de novo a cada Pod.
+- **App e sidecar no mesmo Pod:** [examples/kubernetes/pod.yaml](examples/kubernetes/pod.yaml). Volume compartilhado de propósito, `AGENT_NAME` diferente em cada container.
+- **MachineID do nó:** em containers o `/etc/machine-id` normalmente não existe, e o `MachineID` é gerado por volume. Para que ele identifique o nó do cluster, monte o `/etc/machine-id` do host (`hostPath`, `readOnly`) — trecho comentado no `statefulset.yaml`.
+- `HOSTNAME` não precisa ser definido: o hostname do container é o nome do Pod.
 
 ---
 
-## 9. Recursos Adicionais
+## 10. Recursos adicionais
 
-- **[Referência Completa de Configuração](./references/configuration.md)**: Detalhamento minucioso de cada fallback e fluxo de decisão.
-- **[Guia Avançado de Troubleshooting](./references/troubleshooting.md)**: Diagnóstico aprofundado para falhas complexas em produção.
-- **[Exemplo Executável Mínimo](./examples/minimal/main.go)**: Demonstração concisa em poucas linhas.
-- **[Exemplo Executável Concorrente](./examples/basic/main.go)**: Código Go completo demonstrando leituras concorrentes com goroutines.
+- [references/configuration.md](references/configuration.md): cadeia de resolução e regras de cada campo em detalhe.
+- [references/troubleshooting.md](references/troubleshooting.md): roteiro de diagnóstico, mensagens reais e cenários de produção.
+- [examples/minimal/main.go](examples/minimal/main.go): programa mínimo.
+- [examples/basic/main.go](examples/basic/main.go): leitura concorrente dos getters por goroutines.
+
+Para rodar um exemplo isolado: `cd examples/minimal && go mod tidy && go run .` (com as variáveis do Cenário A ou B da seção 2).

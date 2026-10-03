@@ -31,8 +31,9 @@ Antes de criar uma nova tag de versão, execute este checklist obrigatório:
    ```bash
    go vet ./...
    ```
-5. [ ] O número da versão foi atualizado nos arquivos de exemplo e documentação (`README.md`, `skill/SKILL.md`, `skill/examples/basic/go.mod`).
-6. [ ] As alterações foram commitadas e enviadas para o repositório remoto.
+5. [ ] O número da versão foi atualizado no `require` e nos comandos de instalação e empacotamento da skill do `README.md`, na linha `**Versão documentada:**` e no `go get ...@vX.Y.Z` de `skill/SKILL.md` e no `require` de `skill/examples/*/go.mod`. `TestSkill_VersionIsConsistent` falha se divergirem.
+6. [ ] Os `go.mod` de `skill/examples/` não têm `replace`: a skill é distribuída sozinha (`TestSkill_ExamplesHaveNoReplace`).
+7. [ ] As alterações foram commitadas e enviadas para o repositório remoto.
 
 ---
 
@@ -59,6 +60,15 @@ git push origin v0.3.2
 Utilize o utilitário `gh` com a flag `--verify-tag` (que impede a criação acidental de tags não existentes):
 ```bash
 gh release create v0.3.2 --verify-tag --title "v0.3.2" --generate-notes
+```
+
+### Passo 5: Atualizar o `go.sum` dos exemplos
+A soma de verificação da nova versão só existe depois que a tag é publicada. Sem ela, quem copia a skill precisa rodar `go mod tidy` antes de compilar um exemplo:
+```bash
+for ex in skill/examples/minimal skill/examples/basic; do
+  (cd "$ex" && GOWORK=off go mod tidy)
+done
+git commit -am "chore: go.sum dos exemplos para v0.3.2"
 ```
 
 ---

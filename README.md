@@ -22,7 +22,7 @@ fallbacks do sistema. Projetada para microserviços em containers.
   [`go-loghub-uuidv7`](https://github.com/patrickbrandao/go-loghub-uuidv7), sem
   dependência de `/proc`.
 
-> A especificação técnica completa está modularizada em [docs/00-INDEX.md](docs/00-INDEX.md) (com sumário em [SPEC.md](SPEC.md)). Para um guia prático de integração e receitas para novos serviços, consulte a [skill/](skill/SKILL.md).
+> A especificação técnica completa está modularizada em [docs/00-INDEX.md](docs/00-INDEX.md) (com sumário em [SPEC.md](SPEC.md)). Para um guia prático de integração e receitas para novos serviços, consulte a [skill/](skill/SKILL.md) — que também pode ser instalada nos projetos consumidores (veja [Skill para equipes e agentes de IA](#skill-para-equipes-e-agentes-de-ia)).
 
 ## Instalação
 
@@ -41,7 +41,7 @@ module ident-test
 
 go 1.22
 
-require github.com/patrickbrandao/go-loghub-ident v0.5.1
+require github.com/patrickbrandao/go-loghub-ident v0.5.2
 ```
 
 Arquivo: main.go
@@ -278,7 +278,42 @@ linhas de diagnóstico podem precedê-la.
 
 ## Exemplo
 
-Veja [`skill/examples/minimal`](skill/examples/minimal) para um programa executável.
+Veja [`skill/examples/minimal`](skill/examples/minimal) para um programa executável
+e [`skill/examples/`](skill/examples) para as receitas de Docker e Kubernetes.
+
+## Skill para equipes e agentes de IA
+
+A pasta [`skill/`](skill/SKILL.md) é uma *Agent Skill* autocontida, chamada
+`use-loghub-ident`: integração, regras de uso, testes no projeto consumidor,
+receitas Docker/Kubernetes e diagnóstico de cada código de saída. É escrita para
+os desenvolvedores e os agentes de IA dos serviços que usam a biblioteca e não
+depende de nenhum outro arquivo deste repositório.
+
+Instalar num projeto que usa o Claude Code, a partir de uma tag publicada:
+
+```bash
+V=0.5.2
+mkdir -p .claude/skills/use-loghub-ident
+curl -fsSL "https://github.com/patrickbrandao/go-loghub-ident/archive/refs/tags/v$V.tar.gz" \
+  | tar -xz --strip-components=2 -C .claude/skills/use-loghub-ident "go-loghub-ident-$V/skill"
+```
+
+- Para valer em todos os projetos de uma pessoa, use `~/.claude/skills/use-loghub-ident`
+  como destino. Em outras ferramentas compatíveis com o padrão Agent Skills, copie a
+  pasta para o diretório de skills da ferramenta.
+- A pasta de destino precisa se chamar `use-loghub-ident`, o `name` da skill.
+- Commite a pasta no projeto consumidor: assim toda a equipe e o CI usam a mesma versão.
+
+Gerar um `.zip` para upload no claude.ai ou distribuição interna, a partir de um
+checkout (o `git archive` leva só os arquivos versionados, sem binários compilados
+localmente):
+
+```bash
+git archive --format=zip --prefix=use-loghub-ident/ -o use-loghub-ident.zip v0.5.2:skill
+```
+
+A skill declara a versão da biblioteca que documenta (`**Versão documentada:**` no
+`SKILL.md`); ao atualizar a dependência num projeto, atualize a skill junto.
 
 ## Licença
 

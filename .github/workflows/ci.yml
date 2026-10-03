@@ -34,11 +34,17 @@ jobs:
       - name: testes com detector de corrida
         run: go test -race ./...
 
-      - name: exemplos compilam
+      # O go.mod dos exemplos é o de um consumidor (versão publicada, sem
+      # replace); o go.work temporário troca a versão publicada por este
+      # checkout.
+      - name: exemplos compilam contra este checkout
         run: |
+          go work init ./skill/examples/minimal ./skill/examples/basic
+          go work edit -replace=github.com/patrickbrandao/go-loghub-ident=.
           for ex in skill/examples/minimal skill/examples/basic; do
             (cd "$ex" && go build ./...)
           done
+          rm -f go.work go.work.sum
 
   test-platforms:
     # Executa a suíte (unitária + integração por subprocesso) nas plataformas

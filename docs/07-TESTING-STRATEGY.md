@@ -33,7 +33,7 @@ flowchart TD
 ### Camada 2: Testes de Integração Ponta a Ponta (`tests/`)
 - **Alvo:** A função pública real `Initialize()` e os getters públicos contra o sistema operacional real (arquivos reais em diretórios temporários, concorrência entre processos, FIFOs e symlinks).
 - **Mecanismo:** Harness de subprocesso baseado em `TestMain` em [`tests/helper_test.go`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/tests/helper_test.go).
-- **Aplicações de exemplo:** [`tests/examples_test.go`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/tests/examples_test.go) compila cada programa de `skill/examples/` com o `go` do PATH (o `replace` do `go.mod` deles aponta para este checkout) e o executa em ambiente limpo: caminho feliz via env, geração e reutilização de identidade num volume temporário e falha com o código de saída da biblioteca. É o mesmo caminho que um projeto consumidor percorre.
+- **Aplicações de exemplo:** [`tests/examples_test.go`](file:///Users/patrickbrandao/Projects/loghub/go-loghub-ident/tests/examples_test.go) compila cada programa de `skill/examples/` com o `go` do PATH — o `go.mod` deles é o de um consumidor (versão publicada, sem `replace`), e um `go.work` temporário a substitui (replace) por este checkout — e o executa em ambiente limpo: caminho feliz via env, geração e reutilização de identidade num volume temporário e falha com o código de saída da biblioteca. É o mesmo caminho que um projeto consumidor percorre.
 
 ---
 

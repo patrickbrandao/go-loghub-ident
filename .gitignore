@@ -5,6 +5,10 @@ skill/examples/basic/basic-ident-example
 *.test
 *.out
 
+# Workspace local (ex.: para compilar skill/examples contra este checkout)
+go.work
+go.work.sum
+
 # Artefatos de cobertura
 coverage.txt
 *.cover
